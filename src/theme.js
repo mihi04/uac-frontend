@@ -1,0 +1,16 @@
+export const COLORS = {
+  headerBg: "#162d3a",
+  subNavBg: "#1e4457",
+  dropdownBg: "#1e5068",
+  sidebarPanelBg: "#d8e8f0",
+  bodyBg: "#e8edf1",
+  btnBg: "#2e6e82",
+  btnHover: "#245a6c",
+  tableHeader: "#1e5068",
+  inputBorder: "#aaa",
+  sectionLine: "#2e6e82",
+  text: "#1a2a33",
+  textLight: "#fff",
+  textMuted: "#555",
+  link: "#1a6080",
+};
