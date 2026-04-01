@@ -1,4 +1,4 @@
-const DEFAULT_BASE = "http://uac-backend-production.up.railway.app:4502/api/v1";
+const DEFAULT_BASE = "https://uac-backend-production.up.railway.app:4502/api/v1";
 
 export const STORAGE_ACCESS = "srm_access_token";
 export const STORAGE_REFRESH = "srm_refresh_token";
