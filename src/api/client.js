@@ -1,4 +1,4 @@
-const DEFAULT_BASE = "http://127.0.0.1:8000/api/v1";
+const DEFAULT_BASE = "http://uac-backend.vercel.app/api/v1";
 
 export const STORAGE_ACCESS = "srm_access_token";
 export const STORAGE_REFRESH = "srm_refresh_token";
