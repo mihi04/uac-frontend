@@ -6,7 +6,7 @@ export const STORAGE_REFRESH = "srm_refresh_token";
 export function getApiBase() {
   return (import.meta.env.VITE_API_BASE_URL || DEFAULT_BASE).replace(/\/$/, "");
 }
-s
+
 export function getStoredTokens() {
   return {
     access: localStorage.getItem(STORAGE_ACCESS),
