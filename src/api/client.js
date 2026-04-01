@@ -1,4 +1,4 @@
-const DEFAULT_BASE = "http://uac-backend.vercel.app/api/v1";
+const DEFAULT_BASE = "http://uac-backend-production.up.railway.app:4502/api/v1";
 
 export const STORAGE_ACCESS = "srm_access_token";
 export const STORAGE_REFRESH = "srm_refresh_token";
@@ -6,7 +6,7 @@ export const STORAGE_REFRESH = "srm_refresh_token";
 export function getApiBase() {
   return (import.meta.env.VITE_API_BASE_URL || DEFAULT_BASE).replace(/\/$/, "");
 }
-
+s
 export function getStoredTokens() {
   return {
     access: localStorage.getItem(STORAGE_ACCESS),
