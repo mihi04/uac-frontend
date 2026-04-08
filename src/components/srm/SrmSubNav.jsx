@@ -9,6 +9,10 @@ export function SrmSubNav({
   adminItems,
   onNavigate,
   onHome,
+  onBack,
+  onForward,
+  canGoBack,
+  canGoForward,
 }) {
   return (
     <div style={style.subNav}>
@@ -35,6 +39,28 @@ export function SrmSubNav({
           Admin {adminOpen ? "▼" : "▶"}
         </span>
       )}
+      <div style={style.subNavNavEnd}>
+        <span
+          style={{ ...style.navItem, ...(canGoBack ? {} : style.navItemDisabled) }}
+          onClick={canGoBack ? onBack : undefined}
+          role="button"
+          tabIndex={canGoBack ? 0 : -1}
+          title="Back"
+          aria-label="Back"
+        >
+          ◀ Back
+        </span>
+        <span
+          style={{ ...style.navItem, ...(canGoForward ? {} : style.navItemDisabled) }}
+          onClick={canGoForward ? onForward : undefined}
+          role="button"
+          tabIndex={canGoForward ? 0 : -1}
+          title="Forward"
+          aria-label="Forward"
+        >
+          Forward ▶
+        </span>
+      </div>
       {menuOpen && (
         <div style={{ ...style.dropdown, left: 80 }}>
           {menuItems.map(item => (

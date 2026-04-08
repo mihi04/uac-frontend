@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useCallback, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { COLORS } from "../../../theme.js";
 import {
   addCustomerAddress,
@@ -323,6 +323,47 @@ export const BusinessRegistrationScreen = forwardRef(function BusinessRegistrati
   const [saveMessage, setSaveMessage] = useState(null);
   const [busy, setBusy] = useState(false);
   const logoInputRef = useRef(null);
+  const baselineRef = useRef("");
+  const didInitBaselineRef = useRef(false);
+
+  const stateRef = useRef({});
+  stateRef.current = {
+    form,
+    customerId,
+    primaryContactId,
+    altContactId,
+    addrRegId,
+    addrBillId,
+    addrShipId,
+    registeredAt,
+    kycFiles,
+    logoFile,
+  };
+
+  function captureDirtySnapshot() {
+    const s = stateRef.current;
+    const kycSig = Object.fromEntries(
+      Object.entries(s.kycFiles).map(([k, f]) => [k, f ? `${f.name}:${f.size}` : null])
+    );
+    return JSON.stringify({
+      form: s.form,
+      customerId: s.customerId,
+      primaryContactId: s.primaryContactId,
+      altContactId: s.altContactId,
+      addrRegId: s.addrRegId,
+      addrBillId: s.addrBillId,
+      addrShipId: s.addrShipId,
+      registeredAt: s.registeredAt,
+      logoSig: s.logoFile ? `${s.logoFile.name}:${s.logoFile.size}` : null,
+      kyc: kycSig,
+    });
+  }
+
+  useLayoutEffect(() => {
+    if (didInitBaselineRef.current) return;
+    didInitBaselineRef.current = true;
+    baselineRef.current = captureDirtySnapshot();
+  }, []);
 
   const set = useCallback(k => v => setForm(prev => ({ ...prev, [k]: v })), []);
   const setKyc = useCallback((key, file) => {
@@ -352,6 +393,9 @@ export const BusinessRegistrationScreen = forwardRef(function BusinessRegistrati
     setKycKey(k => k + 1);
     setSaveError(null);
     setSaveMessage(null);
+    queueMicrotask(() => {
+      baselineRef.current = captureDirtySnapshot();
+    });
   }, [logoPreview]);
 
   const loadCustomer = useCallback(async () => {
@@ -377,6 +421,9 @@ export const BusinessRegistrationScreen = forwardRef(function BusinessRegistrati
     setAddrShipId(ids.addrShipId);
     setRegisteredAt(ids.registeredAt);
     setSaveMessage("Loaded from server.");
+    queueMicrotask(() => {
+      baselineRef.current = captureDirtySnapshot();
+    });
   }, [customerId]);
 
   const buildCustomerPayload = useCallback(() => {
@@ -601,6 +648,9 @@ export const BusinessRegistrationScreen = forwardRef(function BusinessRegistrati
       setKycKey(k => k + 1);
       setBusy(false);
       setSaveMessage(`Updated company #${customerId}.`);
+      queueMicrotask(() => {
+        baselineRef.current = captureDirtySnapshot();
+      });
       return;
     }
 
@@ -672,6 +722,9 @@ export const BusinessRegistrationScreen = forwardRef(function BusinessRegistrati
     setKycKey(k => k + 1);
     setBusy(false);
     setSaveMessage(`Saved company #${id}.`);
+    queueMicrotask(() => {
+      baselineRef.current = captureDirtySnapshot();
+    });
   }, [
     form,
     customerId,
@@ -687,7 +740,19 @@ export const BusinessRegistrationScreen = forwardRef(function BusinessRegistrati
     uploadPendingDocs,
   ]);
 
-  useImperativeHandle(ref, () => ({ clear, refresh: loadCustomer, save }), [clear, loadCustomer, save]);
+  useImperativeHandle(
+    ref,
+    () => ({
+      clear,
+      refresh: loadCustomer,
+      save,
+      isDirty: () => captureDirtySnapshot() !== baselineRef.current,
+      markClean: () => {
+        baselineRef.current = captureDirtySnapshot();
+      },
+    }),
+    [clear, loadCustomer, save]
+  );
 
   const kycRow = (label, docKey) => (
     <div style={{ ...style.formRow, alignItems: "center" }}>

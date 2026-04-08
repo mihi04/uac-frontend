@@ -8,6 +8,10 @@ export function SrmLayout({
   user,
   onLogout,
   navigate,
+  goBack,
+  goForward,
+  canGoBack,
+  canGoForward,
   menuOpen,
   setMenuOpen,
   adminOpen,
@@ -33,6 +37,10 @@ export function SrmLayout({
         adminItems={adminItems}
         onNavigate={navigate}
         onHome={() => navigate("dashboard")}
+        onBack={goBack}
+        onForward={goForward}
+        canGoBack={canGoBack}
+        canGoForward={canGoForward}
       />
       <div
         style={style.mainLayout}

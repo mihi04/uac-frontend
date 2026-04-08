@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useReducer, useRef, useState } from "react";
 import { COLORS } from "./theme.js";
 import { canAccessAdminMenu, filterMenuItems } from "./auth/rbac.js";
 import { fetchDashboard } from "./api/dashboardApi.js";
@@ -241,25 +241,52 @@ const UsersAddScreen = forwardRef(function UsersAddScreen(_props, ref) {
   const [groupRows, setGroupRows] = useState([]);
   const [groups, setGroups] = useState([{ groupId: "" }]);
   const [busy, setBusy] = useState(false);
+  const [groupsFetchDone, setGroupsFetchDone] = useState(false);
+  const formRef = useRef(form);
+  const groupsRef = useRef(groups);
+  const cleanSnapRef = useRef("");
+  const baselineReadyRef = useRef(false);
+  formRef.current = form;
+  groupsRef.current = groups;
   const set = k => v => setForm(f => ({ ...f, [k]: v }));
+
+  const snap = () => JSON.stringify({ form: formRef.current, groups: groupsRef.current });
 
   useEffect(() => {
     let c = false;
     (async () => {
-      const r = await listUserGroups();
-      if (c) return;
-      if (r.ok && r.groups.length) {
-        setGroupRows(r.groups);
-        setGroups(gs => {
-          if (gs[0]?.groupId) return gs;
-          return [{ groupId: String(r.groups[0].id) }];
-        });
+      try {
+        const r = await listUserGroups();
+        if (c) return;
+        if (r.ok && r.groups.length) {
+          setGroupRows(r.groups);
+          setGroups(gs => {
+            if (gs[0]?.groupId) return gs;
+            return [{ groupId: String(r.groups[0].id) }];
+          });
+        }
+      } finally {
+        if (!c) setGroupsFetchDone(true);
       }
     })();
     return () => { c = true; };
   }, []);
 
+  useEffect(() => {
+    if (!groupsFetchDone || baselineReadyRef.current) return;
+    cleanSnapRef.current = snap();
+    baselineReadyRef.current = true;
+  }, [groupsFetchDone, form, groups]);
+
   useImperativeHandle(ref, () => ({
+    isDirty() {
+      if (!baselineReadyRef.current) return false;
+      return snap() !== cleanSnapRef.current;
+    },
+    markClean() {
+      cleanSnapRef.current = snap();
+      baselineReadyRef.current = true;
+    },
     async submit() {
       if (!form.name.trim() || !form.email.trim()) { alert("User name and email are required."); return; }
       if (form.password.length < 8) { alert("Password must be at least 8 characters."); return; }
@@ -288,12 +315,21 @@ const UsersAddScreen = forwardRef(function UsersAddScreen(_props, ref) {
       setBusy(true);
       const r = await createUser(payload);
       setBusy(false);
-      if (r.ok) { alert("User saved!"); return; }
+      if (r.ok) {
+        alert("User saved!");
+        queueMicrotask(() => {
+          cleanSnapRef.current = snap();
+        });
+        return;
+      }
       alert(formatApiError(r.data));
     },
     clear() {
       setForm({ name: "", email: "", empNo: "", phone: "", password: "", confirmPassword: "", status: "Active", homepage: "dashboard", gender: "Male" });
       setGroups([{ groupId: groupRows[0] ? String(groupRows[0].id) : "" }]);
+      queueMicrotask(() => {
+        cleanSnapRef.current = snap();
+      });
     },
   }), [form, groups, groupRows]);
 
@@ -434,25 +470,54 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
   const [groupId, setGroupId] = useState(null);
   const [saveMsg, setSaveMsg] = useState(null);
   const [saveErr, setSaveErr] = useState(null);
+  const [listsLoaded, setListsLoaded] = useState(false);
+  const formRef = useRef(form);
+  const permRowsRef = useRef(permRows);
+  const memberIdsRef = useRef(memberIds);
+  const groupIdRef = useRef(groupId);
+  const cleanSnapRef = useRef("");
+  const baselineReadyRef = useRef(false);
+  formRef.current = form;
+  permRowsRef.current = permRows;
+  memberIdsRef.current = memberIds;
+  groupIdRef.current = groupId;
   const set = k => v => setForm(f => ({ ...f, [k]: v }));
+
+  const snap = () =>
+    JSON.stringify({
+      form: formRef.current,
+      permRows: permRowsRef.current,
+      memberIds: memberIdsRef.current,
+      groupId: groupIdRef.current,
+    });
 
   useEffect(() => {
     let c = false;
     (async () => {
-      const [sr, ur] = await Promise.all([listScreens(), listUsers({ pageSize: 500 })]);
-      if (c) return;
-      if (sr.ok) {
-        setScreenRows(sr.screens);
-        setPermRows(sr.screens.map(s => ({
-          screen: s.id, screen_code: s.code, screen_name: s.name,
-          can_view: false, can_add: false, can_edit: false, can_delete: false,
-          can_approve: false, can_reject: false, can_export: false, can_print: false,
-        })));
+      try {
+        const [sr, ur] = await Promise.all([listScreens(), listUsers({ pageSize: 500 })]);
+        if (c) return;
+        if (sr.ok) {
+          setScreenRows(sr.screens);
+          setPermRows(sr.screens.map(s => ({
+            screen: s.id, screen_code: s.code, screen_name: s.name,
+            can_view: false, can_add: false, can_edit: false, can_delete: false,
+            can_approve: false, can_reject: false, can_export: false, can_print: false,
+          })));
+        }
+        if (ur.ok) setAllUsers(ur.results.map(u => ({ id: u.id, name: u.name, email: u.email })));
+      } finally {
+        if (!c) setListsLoaded(true);
       }
-      if (ur.ok) setAllUsers(ur.results.map(u => ({ id: u.id, name: u.name, email: u.email })));
     })();
     return () => { c = true; };
   }, []);
+
+  useEffect(() => {
+    if (!listsLoaded || baselineReadyRef.current) return;
+    cleanSnapRef.current = snap();
+    baselineReadyRef.current = true;
+  }, [listsLoaded, form, permRows, memberIds, groupId]);
 
   function togglePerm(idx, key) {
     setPermRows(prev => {
@@ -467,6 +532,14 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
   function setMember(idx, val) { setMemberIds(prev => { const n = [...prev]; n[idx] = val; return n; }); }
 
   useImperativeHandle(ref, () => ({
+    isDirty() {
+      if (!baselineReadyRef.current) return false;
+      return snap() !== cleanSnapRef.current;
+    },
+    markClean() {
+      cleanSnapRef.current = snap();
+      baselineReadyRef.current = true;
+    },
     async save() {
       if (!form.name.trim()) { alert("User Group name is required."); return; }
       setBusy(true);
@@ -500,6 +573,10 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
         const id = r.data?.id || groupId;
         setGroupId(id);
         setSaveMsg(`Group #${id} saved.`);
+        queueMicrotask(() => {
+          groupIdRef.current = id;
+          cleanSnapRef.current = snap();
+        });
       } else {
         setSaveErr(formatApiError(r.data));
       }
@@ -515,6 +592,9 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
       setGroupId(null);
       setSaveMsg(null);
       setSaveErr(null);
+      queueMicrotask(() => {
+        cleanSnapRef.current = snap();
+      });
     },
     async refresh() {
       if (!groupId) return;
@@ -538,6 +618,9 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
       const mems = (d.members || []).map(m => String(m.user_id));
       setMemberIds(mems);
       setSaveMsg("Loaded from server.");
+      queueMicrotask(() => {
+        cleanSnapRef.current = snap();
+      });
     },
   }), [form, permRows, memberIds, groupId, screenRows]);
 
@@ -658,8 +741,29 @@ function formatShellError(err) {
   return "Failed to load dashboard.";
 }
 
+const NAV_INITIAL = { history: ["dashboard"], index: 0 };
+
+function navReducer(state, action) {
+  const { history, index } = state;
+  const current = history[index];
+  switch (action.type) {
+    case "push": {
+      if (action.screen === current) return state;
+      const h = [...history.slice(0, index + 1), action.screen];
+      return { history: h, index: h.length - 1 };
+    }
+    case "back":
+      return index <= 0 ? state : { ...state, index: index - 1 };
+    case "forward":
+      return index >= history.length - 1 ? state : { ...state, index: index + 1 };
+    default:
+      return state;
+  }
+}
+
 export function SmartRevenueApp({ user, onLogout }) {
-  const [screen, setScreen] = useState("dashboard");
+  const [{ history: navHistory, index: navIndex }, dispatchNav] = useReducer(navReducer, NAV_INITIAL);
+  const screen = navHistory[navIndex];
   const [menuOpen, setMenuOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
   const [bookmarks, setBookmarks] = useState(() => loadBookmarksFromStorage());
@@ -688,7 +792,49 @@ export function SmartRevenueApp({ user, onLogout }) {
 
   useEffect(() => { refreshShellData(); }, [refreshShellData]);
 
-  const navigate = useCallback(s => { setScreen(s); setMenuOpen(false); setAdminOpen(false); }, []);
+  const confirmLeaveIfNeeded = useCallback(() => {
+    const map = { "users-add": usersAddRef, "usergroup-add": groupAddRef, "business-reg": bizRegRef };
+    const r = map[screen];
+    try {
+      if (r?.current?.isDirty?.()) {
+        return window.confirm("You have unsaved changes. Leave without saving?");
+      }
+    } catch {
+      /* ignore */
+    }
+    return true;
+  }, [screen]);
+
+  const navigate = useCallback(
+    next => {
+      setMenuOpen(false);
+      setAdminOpen(false);
+      if (next === screen) return;
+      if (!confirmLeaveIfNeeded()) return;
+      dispatchNav({ type: "push", screen: next });
+    },
+    [screen, confirmLeaveIfNeeded]
+  );
+
+  const goBack = useCallback(() => {
+    if (navIndex <= 0) return;
+    if (!confirmLeaveIfNeeded()) return;
+    dispatchNav({ type: "back" });
+  }, [navIndex, confirmLeaveIfNeeded]);
+
+  const goForward = useCallback(() => {
+    if (navIndex >= navHistory.length - 1) return;
+    if (!confirmLeaveIfNeeded()) return;
+    dispatchNav({ type: "forward" });
+  }, [navIndex, navHistory.length, confirmLeaveIfNeeded]);
+
+  const handleLogoutRequest = useCallback(() => {
+    if (!confirmLeaveIfNeeded()) return;
+    onLogout();
+  }, [onLogout, confirmLeaveIfNeeded]);
+
+  const canGoBack = navIndex > 0;
+  const canGoForward = navIndex < navHistory.length - 1;
 
   const addBookmark = useCallback(sc => {
     const label = SCREEN_TITLES[sc] || sc;
@@ -757,8 +903,12 @@ export function SmartRevenueApp({ user, onLogout }) {
   return (
     <SrmLayout
       user={user}
-      onLogout={onLogout}
+      onLogout={handleLogoutRequest}
       navigate={navigate}
+      goBack={goBack}
+      goForward={goForward}
+      canGoBack={canGoBack}
+      canGoForward={canGoForward}
       menuOpen={menuOpen}
       setMenuOpen={setMenuOpen}
       adminOpen={adminOpen}
