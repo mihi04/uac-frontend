@@ -185,7 +185,9 @@ function SelectField({ label, value, onChange, options = [], width = 200 }) {
   );
 }
 
-function Sidebar({ bookmarks = [] }) {
+function Sidebar({ bookmarks = [], onRemoveBookmark }) {
+  const [hoveredBookmarkIndex, setHoveredBookmarkIndex] = useState(null);
+
   return (
     <div style={style.sidebar}>
       <div style={style.sidePanel}>
@@ -203,7 +205,29 @@ function Sidebar({ bookmarks = [] }) {
       <div style={{ ...style.sidePanel, flex: 1 }}>
         <div style={style.sidePanelTitle}>Bookmarks</div>
         {bookmarks.map((b, i) => (
-          <div key={i} style={{ fontSize: 11, color: COLORS.link, marginBottom: 4, cursor: "pointer" }}>📌 {b}</div>
+          <div
+            key={i}
+            style={{ fontSize: 11, color: COLORS.link, marginBottom: 4, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}
+            onMouseEnter={() => setHoveredBookmarkIndex(i)}
+            onMouseLeave={() => setHoveredBookmarkIndex(null)}
+          >
+            <span>📌 {b}</span>
+            <button
+              onClick={() => onRemoveBookmark && onRemoveBookmark(i)}
+              style={{
+                border: "none",
+                background: "transparent",
+                color: "#c0392b",
+                cursor: "pointer",
+                fontSize: 12,
+                padding: "0 2px",
+                visibility: hoveredBookmarkIndex === i ? "visible" : "hidden",
+              }}
+              aria-label={`Remove bookmark ${b}`}
+            >
+              🗑
+            </button>
+          </div>
         ))}
       </div>
     </div>
@@ -936,6 +960,10 @@ export default function App() {
     setAdminOpen(false);
   }
 
+  function removeBookmark(indexToRemove) {
+    setBookmarks((currentBookmarks) => currentBookmarks.filter((_, i) => i !== indexToRemove));
+  }
+
   return (
     <div style={style.app}>
       {/* TOP HEADER */}
@@ -1002,7 +1030,7 @@ export default function App() {
             <div style={{ padding: 30, color: "#888" }}>🚧 {title} — Coming Soon</div>
           )}
         </div>
-        <Sidebar bookmarks={bookmarks} />
+        <Sidebar bookmarks={bookmarks} onRemoveBookmark={removeBookmark} />
       </div>
     </div>
   );

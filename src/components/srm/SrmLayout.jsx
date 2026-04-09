@@ -24,6 +24,7 @@ export function SrmLayout({
   sidebarAlerts,
   sidebarTasks,
   bookmarks,
+  onBookmarkRemove,
 }) {
   return (
     <div style={style.app}>
@@ -55,7 +56,13 @@ export function SrmLayout({
           <SrmPageBar title={pageTitle} actions={pageActions} />
           {children}
         </div>
-        <SrmSidebar alerts={sidebarAlerts} tasks={sidebarTasks} bookmarks={bookmarks} onBookmarkNavigate={navigate} />
+        <SrmSidebar
+          alerts={sidebarAlerts}
+          tasks={sidebarTasks}
+          bookmarks={bookmarks}
+          onBookmarkNavigate={navigate}
+          onBookmarkRemove={onBookmarkRemove}
+        />
       </div>
     </div>
   );

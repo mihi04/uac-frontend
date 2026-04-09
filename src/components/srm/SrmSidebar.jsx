@@ -1,7 +1,10 @@
+import { useState } from "react";
 import { COLORS } from "../../theme.js";
 import { srmStyle as style } from "./srmStyles.js";
 
-export function SrmSidebar({ alerts = [], tasks = [], bookmarks = [], onBookmarkNavigate, emptyHint }) {
+export function SrmSidebar({ alerts = [], tasks = [], bookmarks = [], onBookmarkNavigate, onBookmarkRemove, emptyHint }) {
+  const [hoveredBookmarkIndex, setHoveredBookmarkIndex] = useState(null);
+
   return (
     <div style={style.sidebar}>
       <div style={style.sidePanel}>
@@ -31,13 +34,34 @@ export function SrmSidebar({ alerts = [], tasks = [], bookmarks = [], onBookmark
         {bookmarks.map((b, i) => (
           <div
             key={`${b.screen}-${i}`}
-            style={{ fontSize: 11, color: COLORS.link, marginBottom: 4, cursor: "pointer" }}
+            style={{ fontSize: 11, color: COLORS.link, marginBottom: 4, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}
             onClick={() => onBookmarkNavigate?.(b.screen)}
             onKeyDown={e => e.key === "Enter" && onBookmarkNavigate?.(b.screen)}
+            onMouseEnter={() => setHoveredBookmarkIndex(i)}
+            onMouseLeave={() => setHoveredBookmarkIndex(null)}
             role="button"
             tabIndex={0}
           >
-            📌 {b.label}
+            <span>📌 {b.label}</span>
+            <button
+              type="button"
+              aria-label={`Remove bookmark ${b.label}`}
+              onClick={e => {
+                e.stopPropagation();
+                onBookmarkRemove?.(i);
+              }}
+              style={{
+                border: "none",
+                background: "transparent",
+                color: "#c0392b",
+                cursor: "pointer",
+                fontSize: 12,
+                padding: "0 2px",
+                visibility: hoveredBookmarkIndex === i ? "visible" : "hidden",
+              }}
+            >
+              🗑
+            </button>
           </div>
         ))}
       </div>

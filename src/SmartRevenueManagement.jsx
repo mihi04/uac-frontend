@@ -841,6 +841,10 @@ export function SmartRevenueApp({ user, onLogout }) {
     setBookmarks(prev => prev.some(b => b.screen === sc) ? prev : [...prev, { label, screen: sc }]);
   }, []);
 
+  const removeBookmark = useCallback(indexToRemove => {
+    setBookmarks(prev => prev.filter((_, i) => i !== indexToRemove));
+  }, []);
+
   const menuItems = useMemo(() => filterMenuItems(user, MENU_ITEMS), [user]);
   const adminItems = useMemo(() => (canAccessAdminMenu(user) ? ADMIN_ITEMS : []), [user]);
   const title = SCREEN_TITLES[screen] || screen;
@@ -920,6 +924,7 @@ export function SmartRevenueApp({ user, onLogout }) {
       sidebarAlerts={sidebarAlerts}
       sidebarTasks={sidebarTasks}
       bookmarks={bookmarks}
+      onBookmarkRemove={removeBookmark}
     >
       {screen === "dashboard" && <DashboardScreen shell={shell} reloadTablesKey={dashboardReloadKey} />}
       {screen === "business-reg" && <BusinessRegistrationScreen ref={bizRegRef} />}
