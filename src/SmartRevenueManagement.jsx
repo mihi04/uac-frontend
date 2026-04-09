@@ -502,7 +502,7 @@ const UsersAddScreen = forwardRef(function UsersAddScreen({ mode = "add", userId
 UsersAddScreen.displayName = "UsersAddScreen";
 
 // ── User Group – Search ──────────────────────────────────────────────────────
-function UserGroupSearchScreen() {
+function UserGroupSearchScreen({ onOpenGroup }) {
   const [ugName, setUgName] = useState("");
   const [desc, setDesc] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -550,7 +550,19 @@ function UserGroupSearchScreen() {
           {searched && results.length === 0 && <tr><td colSpan={4} style={{ ...style.td, color: "#999" }}>No results found.</td></tr>}
           {results.map(g => (
             <tr key={g.id}>
-              <td style={style.td}>{g.name}</td>
+              <td style={style.td}>
+                <span
+                  role="button"
+                  tabIndex={0}
+                  style={{ color: COLORS.link, cursor: "pointer" }}
+                  onClick={() => onOpenGroup?.(g.id)}
+                  onKeyDown={e => e.key === "Enter" && onOpenGroup?.(g.id)}
+                  onMouseEnter={e => { e.currentTarget.style.textDecoration = "underline"; }}
+                  onMouseLeave={e => { e.currentTarget.style.textDecoration = "none"; }}
+                >
+                  {g.name}
+                </span>
+              </td>
               <td style={style.td}>{g.description}</td>
               <td style={style.td}><span style={g.status === "Active" ? style.badgeGreen : style.badgeRed}>{g.status}</span></td>
               <td style={style.td}>{g.total}</td>
@@ -607,7 +619,8 @@ function mergeScreenAccessRowsForSave(rows) {
   }));
 }
 
-const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
+const UserGroupAddScreen = forwardRef(function UserGroupAddScreen({ mode = "add", viewGroupId = null }, ref) {
+  const isReadOnly = mode === "view";
   const [form, setForm] = useState({ code: "", desc: "", status: "Active" });
   const [screenRows, setScreenRows] = useState([]);
   const [screenAccessRows, setScreenAccessRows] = useState([emptyScreenAccessRow()]);
@@ -654,10 +667,64 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
   }, []);
 
   useEffect(() => {
-    if (!listsLoaded || baselineReadyRef.current) return;
-    cleanSnapRef.current = snap();
-    baselineReadyRef.current = true;
-  }, [listsLoaded, form, screenAccessRows, memberIds, groupId]);
+    if (!listsLoaded) return;
+    let cancelled = false;
+    baselineReadyRef.current = false;
+
+    async function run() {
+      if (mode === "view" && viewGroupId != null) {
+        setBusy(true);
+        const r = await getGroup(viewGroupId);
+        if (cancelled) return;
+        setBusy(false);
+        if (!r.ok || !r.data) {
+          alert(formatApiError(r.data));
+          queueMicrotask(() => {
+            cleanSnapRef.current = snap();
+            baselineReadyRef.current = true;
+          });
+          return;
+        }
+        const d = r.data;
+        const codeVal = (d.code || d.name || "").trim();
+        setForm({ code: codeVal, desc: d.description || "", status: d.status ? "Active" : "Inactive" });
+        const sp = d.screen_permissions || [];
+        const fromServer = sp
+          .filter(p => p.screen != null)
+          .map(p => ({
+            screen: String(p.screen),
+            can_view: !!p.can_view,
+            can_add: !!p.can_add,
+            can_delete: !!p.can_delete,
+          }));
+        setScreenAccessRows(fromServer.length > 0 ? fromServer : [emptyScreenAccessRow()]);
+        const mems = (d.members || []).map(m => String(m.user_id));
+        setMemberIds(mems);
+        setGroupId(viewGroupId);
+        setSaveMsg(null);
+        setSaveErr(null);
+        queueMicrotask(() => {
+          groupIdRef.current = viewGroupId;
+          cleanSnapRef.current = snap();
+          baselineReadyRef.current = true;
+        });
+      } else {
+        setForm({ code: "", desc: "", status: "Active" });
+        setScreenAccessRows([emptyScreenAccessRow()]);
+        setMemberIds([]);
+        setGroupId(null);
+        setSaveMsg(null);
+        setSaveErr(null);
+        queueMicrotask(() => {
+          groupIdRef.current = null;
+          cleanSnapRef.current = snap();
+          baselineReadyRef.current = true;
+        });
+      }
+    }
+    void run();
+    return () => { cancelled = true; };
+  }, [listsLoaded, mode, viewGroupId]);
 
   function addScreenAccessRow() {
     setScreenAccessRows(prev => [...prev, emptyScreenAccessRow()]);
@@ -687,6 +754,7 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
       baselineReadyRef.current = true;
     },
     async save() {
+      if (isReadOnly) return;
       const codeTrim = (form.code || "").trim();
       if (!codeTrim) { alert("User Group Code is required."); return; }
       setBusy(true);
@@ -722,6 +790,7 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
       }
     },
     clear() {
+      if (isReadOnly) return;
       setForm({ code: "", desc: "", status: "Active" });
       setScreenAccessRows([emptyScreenAccessRow()]);
       setMemberIds([]);
@@ -729,7 +798,9 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
       setSaveMsg(null);
       setSaveErr(null);
       queueMicrotask(() => {
+        groupIdRef.current = null;
         cleanSnapRef.current = snap();
+        baselineReadyRef.current = true;
       });
     },
     async refresh() {
@@ -756,9 +827,10 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
       setSaveMsg("Loaded from server.");
       queueMicrotask(() => {
         cleanSnapRef.current = snap();
+        baselineReadyRef.current = true;
       });
     },
-  }), [form, screenAccessRows, memberIds, groupId, screenRows]);
+  }), [form, screenAccessRows, memberIds, groupId, screenRows, isReadOnly]);
 
   return (
     <div style={style.contentArea}>
@@ -768,20 +840,33 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
 
       <div style={style.section}>
         <SectionHeader title="User Group Details" />
-        <Field label="User Group Code" value={form.code} onChange={set("code")} />
-        <Field label="Description" value={form.desc} onChange={set("desc")} width={400} />
-        <SelectField label="User Group Status" value={form.status} onChange={set("status")} options={["Active", "Inactive"]} width={140} />
+        <fieldset disabled={isReadOnly} style={{ border: "none", margin: 0, padding: 0, minWidth: 0 }}>
+          <Field label="User Group Code" value={form.code} onChange={set("code")} />
+          <Field label="Description" value={form.desc} onChange={set("desc")} width={400} />
+          <SelectField label="User Group Status" value={form.status} onChange={set("status")} options={["Active", "Inactive"]} width={140} />
+        </fieldset>
       </div>
 
       <div style={style.section}>
         <SectionHeader title="Access Details – Screens" />
         {screenAccessRows.map((row, i) => (
           <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 8 }}>
-            <span style={{ color: "#2e8a5a", cursor: "pointer", fontSize: 18 }} onClick={addScreenAccessRow}>+</span>
-            <span style={{ color: "#c0392b", cursor: "pointer", fontSize: 16 }} onClick={() => removeScreenAccessRow(i)}>🗑</span>
+            <span
+              style={{ color: "#2e8a5a", cursor: isReadOnly ? "not-allowed" : "pointer", fontSize: 18, opacity: isReadOnly ? 0.45 : 1 }}
+              onClick={() => { if (!isReadOnly) addScreenAccessRow(); }}
+            >
+              +
+            </span>
+            <span
+              style={{ color: "#c0392b", cursor: isReadOnly ? "not-allowed" : "pointer", fontSize: 16, opacity: isReadOnly ? 0.45 : 1 }}
+              onClick={() => { if (!isReadOnly) removeScreenAccessRow(i); }}
+            >
+              🗑
+            </span>
             <select
               style={{ ...style.select, width: 220 }}
               value={row.screen}
+              disabled={isReadOnly}
               onChange={e => setScreenAccessRow(i, { screen: e.target.value })}
             >
               <option value="">— Select screen —</option>
@@ -794,6 +879,7 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
                 <input
                   type="checkbox"
                   checked={!!row[a.key]}
+                  disabled={isReadOnly}
                   onChange={() => setScreenAccessRow(i, { [a.key]: !row[a.key] })}
                 />
                 {a.label}
@@ -807,16 +893,31 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
         <SectionHeader title="User Group – Users" />
         {memberIds.map((mid, i) => (
           <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-            <span style={{ color: "#2e8a5a", cursor: "pointer", fontSize: 18 }} onClick={addMember}>+</span>
-            <span style={{ color: "#c0392b", cursor: "pointer", fontSize: 16 }} onClick={() => removeMember(i)}>🗑</span>
-            <select style={{ ...style.select, width: 260 }} value={mid} onChange={e => setMember(i, e.target.value)}>
+            <span
+              style={{ color: "#2e8a5a", cursor: isReadOnly ? "not-allowed" : "pointer", fontSize: 18, opacity: isReadOnly ? 0.45 : 1 }}
+              onClick={() => { if (!isReadOnly) addMember(); }}
+            >
+              +
+            </span>
+            <span
+              style={{ color: "#c0392b", cursor: isReadOnly ? "not-allowed" : "pointer", fontSize: 16, opacity: isReadOnly ? 0.45 : 1 }}
+              onClick={() => { if (!isReadOnly) removeMember(i); }}
+            >
+              🗑
+            </span>
+            <select
+              style={{ ...style.select, width: 260 }}
+              value={mid}
+              disabled={isReadOnly}
+              onChange={e => setMember(i, e.target.value)}
+            >
               <option value="">— Select user —</option>
               {allUsers.map(u => <option key={u.id} value={String(u.id)}>{u.name} ({u.email})</option>)}
             </select>
           </div>
         ))}
         {memberIds.length === 0 && (
-          <button type="button" style={{ ...style.btn, fontSize: 12 }} onClick={addMember}>+ Add user to group</button>
+          <button type="button" style={{ ...style.btn, fontSize: 12 }} disabled={isReadOnly} onClick={addMember}>+ Add user to group</button>
         )}
       </div>
     </div>
@@ -913,6 +1014,7 @@ export function SmartRevenueApp({ user, onLogout }) {
   const [sidebarTasks, setSidebarTasks] = useState([]);
   const [dashboardReloadKey, setDashboardReloadKey] = useState(0);
   const [usersAddContext, setUsersAddContext] = useState({ mode: "add", userId: null });
+  const [groupAddContext, setGroupAddContext] = useState({ mode: "add", groupId: null });
   const bizRegRef = useRef(null);
   const usersAddRef = useRef(null);
   const groupAddRef = useRef(null);
@@ -934,6 +1036,7 @@ export function SmartRevenueApp({ user, onLogout }) {
 
   const confirmLeaveIfNeeded = useCallback(() => {
     if (screen === "users-add" && usersAddContext.mode === "edit") return true;
+    if (screen === "usergroup-add" && groupAddContext.mode === "view") return true;
     const map = { "users-add": usersAddRef, "usergroup-add": groupAddRef, "business-reg": bizRegRef };
     const r = map[screen];
     try {
@@ -944,7 +1047,7 @@ export function SmartRevenueApp({ user, onLogout }) {
       /* ignore */
     }
     return true;
-  }, [screen, usersAddContext.mode]);
+  }, [screen, usersAddContext.mode, groupAddContext.mode]);
 
   const navigate = useCallback(
     next => {
@@ -982,6 +1085,11 @@ export function SmartRevenueApp({ user, onLogout }) {
     navigate("users-add");
   }, [navigate]);
 
+  const openUserGroupDetails = useCallback(id => {
+    setGroupAddContext({ mode: "view", groupId: id });
+    navigate("usergroup-add");
+  }, [navigate]);
+
   const addBookmark = useCallback(sc => {
     const label = SCREEN_TITLES[sc] || sc;
     setBookmarks(prev => prev.some(b => b.screen === sc) ? prev : [...prev, { label, screen: sc }]);
@@ -993,7 +1101,12 @@ export function SmartRevenueApp({ user, onLogout }) {
 
   const menuItems = useMemo(() => filterMenuItems(user, MENU_ITEMS), [user]);
   const adminItems = useMemo(() => (canAccessAdminMenu(user) ? ADMIN_ITEMS : []), [user]);
-  const title = screen === "users-add" && usersAddContext.mode === "edit" ? "User Details" : (SCREEN_TITLES[screen] || screen);
+  const title =
+    screen === "users-add" && usersAddContext.mode === "edit"
+      ? "User Details"
+      : screen === "usergroup-add" && groupAddContext.mode === "view"
+        ? "User Group – Details"
+        : (SCREEN_TITLES[screen] || screen);
 
   const shell = useMemo(() => ({ kpi, loading: shellLoading, error: shellError, refresh: refreshShellData }), [kpi, shellLoading, shellError, refreshShellData]);
 
@@ -1009,6 +1122,17 @@ export function SmartRevenueApp({ user, onLogout }) {
         { label: "Clear", onClick: () => usersAddRef.current?.clear() },
         { label: "Save", onClick: () => void usersAddRef.current?.submit() },
         { label: "Refresh", onClick: () => {} },
+      ];
+    const userGroupAddActions = groupAddContext.mode === "view"
+      ? [
+        { label: "Bookmark", onClick: () => addBookmark("usergroup-add") },
+        { label: "Refresh", onClick: () => void groupAddRef.current?.refresh() },
+      ]
+      : [
+        { label: "Bookmark", onClick: () => addBookmark("usergroup-add") },
+        { label: "Clear", onClick: () => groupAddRef.current?.clear() },
+        { label: "Save", onClick: () => void groupAddRef.current?.save() },
+        { label: "Refresh", onClick: () => void groupAddRef.current?.refresh() },
       ];
     return {
       dashboard: [dashRefresh],
@@ -1044,17 +1168,12 @@ export function SmartRevenueApp({ user, onLogout }) {
       "usergroup-search": [
         { label: "Bookmark", onClick: () => addBookmark("usergroup-search") },
         { label: "Clear", onClick: () => {} },
-        { label: "Add", onClick: () => navigate("usergroup-add") },
+        { label: "Add", onClick: () => { setGroupAddContext({ mode: "add", groupId: null }); navigate("usergroup-add"); } },
         { label: "Refresh", onClick: () => {} },
       ],
-      "usergroup-add": [
-        { label: "Bookmark", onClick: () => addBookmark("usergroup-add") },
-        { label: "Clear", onClick: () => groupAddRef.current?.clear() },
-        { label: "Save", onClick: () => void groupAddRef.current?.save() },
-        { label: "Refresh", onClick: () => void groupAddRef.current?.refresh() },
-      ],
+      "usergroup-add": userGroupAddActions,
     };
-  }, [addBookmark, navigate, refreshShellData, usersAddContext.mode]);
+  }, [addBookmark, navigate, refreshShellData, usersAddContext.mode, groupAddContext.mode]);
 
   return (
     <SrmLayout
@@ -1085,8 +1204,15 @@ export function SmartRevenueApp({ user, onLogout }) {
       {screen === "invoice" && <InvoiceScreen />}
       {screen === "users-search" && <UsersSearchScreen onOpenUser={openUserDetails} />}
       {screen === "users-add" && <UsersAddScreen ref={usersAddRef} mode={usersAddContext.mode} userId={usersAddContext.userId} />}
-      {screen === "usergroup-search" && <UserGroupSearchScreen />}
-      {screen === "usergroup-add" && <UserGroupAddScreen ref={groupAddRef} />}
+      {screen === "usergroup-search" && <UserGroupSearchScreen onOpenGroup={openUserGroupDetails} />}
+      {screen === "usergroup-add" && (
+        <UserGroupAddScreen
+          key={`${groupAddContext.mode}-${groupAddContext.groupId ?? "new"}`}
+          ref={groupAddRef}
+          mode={groupAddContext.mode}
+          viewGroupId={groupAddContext.groupId}
+        />
+      )}
       {(screen === "admin" || screen === "reports" || screen === "pricing" || screen === "delinquency" || screen === "accounting") && (
         <div style={{ padding: 30, color: "#888" }}>{title} — Coming Soon</div>
       )}
