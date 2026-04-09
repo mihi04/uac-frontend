@@ -9,7 +9,7 @@ import { Field, SectionHeader, SelectField } from "./components/srm/formPrimitiv
 import { buildAlertsFromKpi, shipmentTasksFromList } from "./components/srm/buildShellInsights.js";
 import { loadBookmarksFromStorage, saveBookmarksToStorage } from "./components/srm/bookmarksStorage.js";
 import {
-  createUser, listUserGroups, listUsers, listScreens,
+  createUser, listUserGroups, listUsers, listScreens, getUser, updateUser,
   createGroup, updateGroup, getGroup, getMyPermissions,
 } from "./api/usersApi.js";
 import { DashboardScreen } from "./components/srm/screens/DashboardScreen.jsx";
@@ -147,7 +147,7 @@ function InvoiceScreen() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ── Users – Search ───────────────────────────────────────────────────────────
-function UsersSearchScreen() {
+function UsersSearchScreen({ onOpenUser }) {
   const [uname, setUname] = useState("");
   const [email, setEmail] = useState("");
   const [empNo, setEmpNo] = useState("");
@@ -217,8 +217,20 @@ function UsersSearchScreen() {
         <tbody>
           {searched && results.length === 0 && <tr><td colSpan={5} style={{ ...style.td, color: "#999" }}>No results found.</td></tr>}
           {results.map(u => (
-            <tr key={u.id} style={{ cursor: "pointer" }}>
-              <td style={style.td}>{u.name}</td>
+            <tr key={u.id}>
+              <td style={style.td}>
+                <span
+                  role="button"
+                  tabIndex={0}
+                  style={{ color: COLORS.link, cursor: "pointer" }}
+                  onClick={() => onOpenUser?.(u.id)}
+                  onKeyDown={e => e.key === "Enter" && onOpenUser?.(u.id)}
+                  onMouseEnter={e => { e.currentTarget.style.textDecoration = "underline"; }}
+                  onMouseLeave={e => { e.currentTarget.style.textDecoration = "none"; }}
+                >
+                  {u.name}
+                </span>
+              </td>
               <td style={style.td}>{u.email}</td>
               <td style={style.td}>{u.empNo}</td>
               <td style={style.td}>{u.groups}</td>
@@ -232,16 +244,18 @@ function UsersSearchScreen() {
 }
 
 // ── Users – Add ──────────────────────────────────────────────────────────────
-const UsersAddScreen = forwardRef(function UsersAddScreen(_props, ref) {
+const UsersAddScreen = forwardRef(function UsersAddScreen({ mode = "add", userId = null }, ref) {
+  const isReadOnly = mode === "edit";
   const [form, setForm] = useState({
     name: "", email: "", empNo: "", phone: "",
     password: "", confirmPassword: "",
-    status: "Active", homepage: "dashboard", gender: "Male",
+    status: "Active", homepage: "dashboard", gender: "",
   });
   const [groupRows, setGroupRows] = useState([]);
   const [groups, setGroups] = useState([{ groupId: "" }]);
   const [busy, setBusy] = useState(false);
   const [groupsFetchDone, setGroupsFetchDone] = useState(false);
+  const [loadingUser, setLoadingUser] = useState(false);
   const formRef = useRef(form);
   const groupsRef = useRef(groups);
   const cleanSnapRef = useRef("");
@@ -258,13 +272,7 @@ const UsersAddScreen = forwardRef(function UsersAddScreen(_props, ref) {
       try {
         const r = await listUserGroups();
         if (c) return;
-        if (r.ok && r.groups.length) {
-          setGroupRows(r.groups);
-          setGroups(gs => {
-            if (gs[0]?.groupId) return gs;
-            return [{ groupId: String(r.groups[0].id) }];
-          });
-        }
+        if (r.ok) setGroupRows(r.groups || []);
       } finally {
         if (!c) setGroupsFetchDone(true);
       }
@@ -273,10 +281,79 @@ const UsersAddScreen = forwardRef(function UsersAddScreen(_props, ref) {
   }, []);
 
   useEffect(() => {
-    if (!groupsFetchDone || baselineReadyRef.current) return;
-    cleanSnapRef.current = snap();
-    baselineReadyRef.current = true;
-  }, [groupsFetchDone, form, groups]);
+    if (!groupsFetchDone) return;
+    let cancelled = false;
+
+    function groupIdsFromUser(data) {
+      if (Array.isArray(data?.group_ids)) {
+        return data.group_ids
+          .map(id => String(id))
+          .filter(Boolean);
+      }
+      if (Array.isArray(data?.groups)) {
+        return data.groups
+          .map(g => {
+            if (typeof g === "number" || typeof g === "string") return String(g);
+            if (g && (g.id || g.group_id)) return String(g.id ?? g.group_id);
+            return "";
+          })
+          .filter(Boolean);
+      }
+      if (data?.group !== null && data?.group !== undefined && String(data.group) !== "") {
+        return [String(data.group)];
+      }
+      return [];
+    }
+
+    async function hydrateUserForEdit() {
+      setLoadingUser(true);
+      const r = await getUser(userId);
+      if (cancelled) return;
+      setLoadingUser(false);
+      if (!r.ok || !r.data) {
+        alert(formatApiError(r.data));
+        return;
+      }
+      const d = r.data;
+      const resolvedGender = d.gender ? String(d.gender) : "";
+      const normalizedGender = resolvedGender
+        ? resolvedGender.charAt(0).toUpperCase() + resolvedGender.slice(1).toLowerCase()
+        : "";
+      const statusActive = d.is_active !== undefined ? !!d.is_active : String(d.status).toLowerCase() === "active";
+      const nextForm = {
+        name: d.name || "",
+        email: d.email || "",
+        empNo: d.employee_id || "",
+        phone: d.phone || "",
+        password: "",
+        confirmPassword: "",
+        status: statusActive ? "Active" : "Inactive",
+        homepage: d.homepage || "dashboard",
+        gender: ["Male", "Female", "Other"].includes(normalizedGender) ? normalizedGender : "",
+      };
+      const ids = groupIdsFromUser(d);
+      const nextGroups = ids.length > 0 ? ids.map(id => ({ groupId: id })) : [{ groupId: "" }];
+      setForm(nextForm);
+      setGroups(nextGroups);
+      queueMicrotask(() => {
+        cleanSnapRef.current = snap();
+        baselineReadyRef.current = true;
+      });
+    }
+
+    if (mode === "edit" && userId) {
+      void hydrateUserForEdit();
+    } else {
+      setForm({ name: "", email: "", empNo: "", phone: "", password: "", confirmPassword: "", status: "Active", homepage: "dashboard", gender: "" });
+      setGroups([{ groupId: "" }]);
+      queueMicrotask(() => {
+        cleanSnapRef.current = snap();
+        baselineReadyRef.current = true;
+      });
+    }
+
+    return () => { cancelled = true; };
+  }, [groupsFetchDone, mode, userId, groupRows]);
 
   useImperativeHandle(ref, () => ({
     isDirty() {
@@ -288,9 +365,13 @@ const UsersAddScreen = forwardRef(function UsersAddScreen(_props, ref) {
       baselineReadyRef.current = true;
     },
     async submit() {
+      if (isReadOnly) return;
       if (!form.name.trim() || !form.email.trim()) { alert("User name and email are required."); return; }
-      if (form.password.length < 8) { alert("Password must be at least 8 characters."); return; }
-      if (form.password !== form.confirmPassword) { alert("Passwords do not match."); return; }
+      const wantsPasswordChange = !!form.password || !!form.confirmPassword;
+      if (mode !== "edit" || wantsPasswordChange) {
+        if (form.password.length < 8) { alert("Password must be at least 8 characters."); return; }
+        if (form.password !== form.confirmPassword) { alert("Passwords do not match."); return; }
+      }
 
       const group_ids = groups
         .map(g => Number(String(g.groupId).trim()))
@@ -302,21 +383,23 @@ const UsersAddScreen = forwardRef(function UsersAddScreen(_props, ref) {
         email: form.email.trim(),
         phone: (form.phone || "").trim(),
         employee_id: (form.empNo || "").trim() || null,
-        password: form.password,
-        confirm_password: form.confirmPassword,
         group: primaryGroup,
         group_ids,
-        gender: form.gender.toLowerCase(),
+        gender: form.gender.trim() ? form.gender.toLowerCase() : "",
         homepage: form.homepage,
         status: form.status === "Active" ? "active" : "inactive",
         is_active: form.status === "Active",
       };
+      if (mode !== "edit" || wantsPasswordChange) {
+        payload.password = form.password;
+        payload.confirm_password = form.confirmPassword;
+      }
 
       setBusy(true);
-      const r = await createUser(payload);
+      const r = mode === "edit" && userId ? await updateUser(userId, payload) : await createUser(payload);
       setBusy(false);
       if (r.ok) {
-        alert("User saved!");
+        alert(mode === "edit" ? "User updated!" : "User saved!");
         queueMicrotask(() => {
           cleanSnapRef.current = snap();
         });
@@ -325,22 +408,27 @@ const UsersAddScreen = forwardRef(function UsersAddScreen(_props, ref) {
       alert(formatApiError(r.data));
     },
     clear() {
-      setForm({ name: "", email: "", empNo: "", phone: "", password: "", confirmPassword: "", status: "Active", homepage: "dashboard", gender: "Male" });
-      setGroups([{ groupId: groupRows[0] ? String(groupRows[0].id) : "" }]);
+      if (isReadOnly) return;
+      setForm({ name: "", email: "", empNo: "", phone: "", password: "", confirmPassword: "", status: "Active", homepage: "dashboard", gender: "" });
+      setGroups([{ groupId: "" }]);
       queueMicrotask(() => {
         cleanSnapRef.current = snap();
       });
     },
-  }), [form, groups, groupRows]);
+  }), [form, groups, groupRows, isReadOnly]);
 
   const groupOptions = groupRows.length > 0 ? groupRows : [{ id: "", name: "(Loading…)" }];
 
   return (
     <div style={style.contentArea}>
-      {busy && <div style={{ fontSize: 12, color: "#666", marginBottom: 8 }}>Saving…</div>}
+      {(busy || loadingUser) && <div style={{ fontSize: 12, color: "#666", marginBottom: 8 }}>{loadingUser ? "Loading user…" : "Saving…"}</div>}
       <div style={style.section}>
         <SectionHeader title="User Details" />
-        <div style={{ display: "flex", gap: 40, flexWrap: "wrap" }}>
+        <fieldset
+          disabled={isReadOnly}
+          style={{ border: "none", margin: 0, padding: 0, minWidth: 0 }}
+        >
+          <div style={{ display: "flex", gap: 40, flexWrap: "wrap" }}>
           <div>
             <Field label="User Name" value={form.name} onChange={set("name")} />
             <Field label="Email Id" value={form.email} onChange={set("email")} />
@@ -348,11 +436,11 @@ const UsersAddScreen = forwardRef(function UsersAddScreen(_props, ref) {
             <Field label="Phone Number" value={form.phone} onChange={set("phone")} width={160} />
             <div style={style.formRow}>
               <span style={style.label}>Password</span>
-              <input type="password" value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} style={{ ...style.input, width: 280 }} autoComplete="new-password" />
+              <input type="password" value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} style={{ ...style.input, width: 280 }} autoComplete="new-password" placeholder={isReadOnly ? "********" : ""} />
             </div>
             <div style={style.formRow}>
               <span style={style.label}>Confirm password</span>
-              <input type="password" value={form.confirmPassword} onChange={e => setForm(f => ({ ...f, confirmPassword: e.target.value }))} style={{ ...style.input, width: 280 }} autoComplete="new-password" />
+              <input type="password" value={form.confirmPassword} onChange={e => setForm(f => ({ ...f, confirmPassword: e.target.value }))} style={{ ...style.input, width: 280 }} autoComplete="new-password" placeholder={isReadOnly ? "********" : ""} />
             </div>
             <SelectField label="User Status" value={form.status} onChange={set("status")} options={["Active", "Inactive"]} width={140} />
           </div>
@@ -364,18 +452,45 @@ const UsersAddScreen = forwardRef(function UsersAddScreen(_props, ref) {
               { value: "business-reg", label: "Business Registration" },
               { value: "reports", label: "Reports" },
             ]} width={180} />
-            <SelectField label="Gender" value={form.gender} onChange={set("gender")} options={["Male", "Female", "Other"]} width={140} />
+            <SelectField
+              label="Gender"
+              value={form.gender}
+              onChange={set("gender")}
+              options={[
+                { value: "", label: "None" },
+                { value: "Male", label: "Male" },
+                { value: "Female", label: "Female" },
+                { value: "Other", label: "Other" },
+              ]}
+              width={140}
+            />
           </div>
-        </div>
+          </div>
+        </fieldset>
       </div>
       <div style={style.section}>
         <SectionHeader title="Access Details – User Groups" />
         {groups.map((g, i) => (
           <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-            <span style={{ color: "#2e8a5a", cursor: "pointer", fontSize: 18 }} onClick={() => setGroups(gs => [...gs, { groupId: "" }])}>+</span>
-            <span style={{ color: "#c0392b", cursor: "pointer", fontSize: 16 }} onClick={() => setGroups(gs => gs.length > 1 ? gs.filter((_, idx) => idx !== i) : gs)}>🗑</span>
-            <select style={style.select} value={g.groupId} onChange={e => setGroups(gs => { const n = [...gs]; n[i] = { groupId: e.target.value }; return n; })}>
-              <option value="">— None —</option>
+            <span
+              style={{ color: "#2e8a5a", cursor: isReadOnly ? "not-allowed" : "pointer", fontSize: 18, opacity: isReadOnly ? 0.45 : 1 }}
+              onClick={() => { if (!isReadOnly) setGroups(gs => [...gs, { groupId: "" }]); }}
+            >
+              +
+            </span>
+            <span
+              style={{ color: "#c0392b", cursor: isReadOnly ? "not-allowed" : "pointer", fontSize: 16, opacity: isReadOnly ? 0.45 : 1 }}
+              onClick={() => { if (!isReadOnly) setGroups(gs => gs.length > 1 ? gs.filter((_, idx) => idx !== i) : gs); }}
+            >
+              🗑
+            </span>
+            <select
+              style={style.select}
+              value={g.groupId}
+              disabled={isReadOnly}
+              onChange={e => setGroups(gs => { const n = [...gs]; n[i] = { groupId: e.target.value }; return n; })}
+            >
+              <option value="">None</option>
               {groupOptions.filter(gg => gg.id !== "").map(gg => <option key={gg.id} value={String(gg.id)}>{gg.name}</option>)}
             </select>
           </div>
@@ -448,22 +563,54 @@ function UserGroupSearchScreen() {
 }
 
 // ── User Group – Add ─────────────────────────────────────────────────────────
-const PERM_ACTIONS = [
+const SCREEN_PERM_ACTIONS = [
   { key: "can_view", label: "Read" },
   { key: "can_add", label: "Add" },
-  { key: "can_edit", label: "Edit" },
   { key: "can_delete", label: "Delete" },
-  { key: "can_approve", label: "Approve" },
-  { key: "can_reject", label: "Reject" },
-  { key: "can_export", label: "Export" },
-  { key: "can_print", label: "Print" },
 ];
 
+function emptyScreenAccessRow() {
+  return { screen: "", can_view: false, can_add: false, can_delete: false };
+}
+
+/** Merge rows that reference the same screen (DB unique on group+screen); OR the three flags. */
+function mergeScreenAccessRowsForSave(rows) {
+  const byScreen = new Map();
+  for (const r of rows) {
+    const raw = String(r.screen ?? "").trim();
+    if (!raw) continue;
+    const sid = Number(raw);
+    if (!Number.isFinite(sid) || sid <= 0) continue;
+    if (!r.can_view && !r.can_add && !r.can_delete) continue;
+    const prev = byScreen.get(sid);
+    if (!prev) {
+      byScreen.set(sid, { screen: sid, can_view: !!r.can_view, can_add: !!r.can_add, can_delete: !!r.can_delete });
+    } else {
+      byScreen.set(sid, {
+        screen: sid,
+        can_view: prev.can_view || !!r.can_view,
+        can_add: prev.can_add || !!r.can_add,
+        can_delete: prev.can_delete || !!r.can_delete,
+      });
+    }
+  }
+  return [...byScreen.values()].map(p => ({
+    screen: p.screen,
+    can_view: p.can_view,
+    can_add: p.can_add,
+    can_edit: false,
+    can_delete: p.can_delete,
+    can_approve: false,
+    can_reject: false,
+    can_export: false,
+    can_print: false,
+  }));
+}
+
 const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
-  const [form, setForm] = useState({ name: "", code: "", desc: "", status: "Active" });
+  const [form, setForm] = useState({ code: "", desc: "", status: "Active" });
   const [screenRows, setScreenRows] = useState([]);
-  const [permRows, setPermRows] = useState([]);
-  const [userRows, setUserRows] = useState([]);
+  const [screenAccessRows, setScreenAccessRows] = useState([emptyScreenAccessRow()]);
   const [allUsers, setAllUsers] = useState([]);
   const [memberIds, setMemberIds] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -472,13 +619,13 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
   const [saveErr, setSaveErr] = useState(null);
   const [listsLoaded, setListsLoaded] = useState(false);
   const formRef = useRef(form);
-  const permRowsRef = useRef(permRows);
+  const screenAccessRowsRef = useRef(screenAccessRows);
   const memberIdsRef = useRef(memberIds);
   const groupIdRef = useRef(groupId);
   const cleanSnapRef = useRef("");
   const baselineReadyRef = useRef(false);
   formRef.current = form;
-  permRowsRef.current = permRows;
+  screenAccessRowsRef.current = screenAccessRows;
   memberIdsRef.current = memberIds;
   groupIdRef.current = groupId;
   const set = k => v => setForm(f => ({ ...f, [k]: v }));
@@ -486,7 +633,7 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
   const snap = () =>
     JSON.stringify({
       form: formRef.current,
-      permRows: permRowsRef.current,
+      screenAccessRows: screenAccessRowsRef.current,
       memberIds: memberIdsRef.current,
       groupId: groupIdRef.current,
     });
@@ -497,14 +644,7 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
       try {
         const [sr, ur] = await Promise.all([listScreens(), listUsers({ pageSize: 500 })]);
         if (c) return;
-        if (sr.ok) {
-          setScreenRows(sr.screens);
-          setPermRows(sr.screens.map(s => ({
-            screen: s.id, screen_code: s.code, screen_name: s.name,
-            can_view: false, can_add: false, can_edit: false, can_delete: false,
-            can_approve: false, can_reject: false, can_export: false, can_print: false,
-          })));
-        }
+        if (sr.ok) setScreenRows(sr.screens);
         if (ur.ok) setAllUsers(ur.results.map(u => ({ id: u.id, name: u.name, email: u.email })));
       } finally {
         if (!c) setListsLoaded(true);
@@ -517,12 +657,18 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
     if (!listsLoaded || baselineReadyRef.current) return;
     cleanSnapRef.current = snap();
     baselineReadyRef.current = true;
-  }, [listsLoaded, form, permRows, memberIds, groupId]);
+  }, [listsLoaded, form, screenAccessRows, memberIds, groupId]);
 
-  function togglePerm(idx, key) {
-    setPermRows(prev => {
+  function addScreenAccessRow() {
+    setScreenAccessRows(prev => [...prev, emptyScreenAccessRow()]);
+  }
+  function removeScreenAccessRow(idx) {
+    setScreenAccessRows(prev => (prev.length <= 1 ? prev : prev.filter((_, i) => i !== idx)));
+  }
+  function setScreenAccessRow(idx, patch) {
+    setScreenAccessRows(prev => {
       const n = [...prev];
-      n[idx] = { ...n[idx], [key]: !n[idx][key] };
+      n[idx] = { ...n[idx], ...patch };
       return n;
     });
   }
@@ -541,22 +687,16 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
       baselineReadyRef.current = true;
     },
     async save() {
-      if (!form.name.trim()) { alert("User Group name is required."); return; }
+      const codeTrim = (form.code || "").trim();
+      if (!codeTrim) { alert("User Group Code is required."); return; }
       setBusy(true);
       setSaveMsg(null);
       setSaveErr(null);
-      const screen_permissions = permRows
-        .filter(p => p.can_view || p.can_add || p.can_edit || p.can_delete || p.can_approve || p.can_reject || p.can_export || p.can_print)
-        .map(p => ({
-          screen: p.screen,
-          can_view: p.can_view, can_add: p.can_add, can_edit: p.can_edit,
-          can_delete: p.can_delete, can_approve: p.can_approve, can_reject: p.can_reject,
-          can_export: p.can_export, can_print: p.can_print,
-        }));
+      const screen_permissions = mergeScreenAccessRowsForSave(screenAccessRows);
       const member_ids = memberIds.map(Number).filter(n => Number.isFinite(n) && n > 0);
       const payload = {
-        name: form.name.trim(),
-        code: (form.code || "").trim() || null,
+        name: codeTrim,
+        code: codeTrim,
         description: (form.desc || "").trim(),
         status: form.status === "Active",
         screen_permissions,
@@ -582,12 +722,8 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
       }
     },
     clear() {
-      setForm({ name: "", code: "", desc: "", status: "Active" });
-      setPermRows(screenRows.map(s => ({
-        screen: s.id, screen_code: s.code, screen_name: s.name,
-        can_view: false, can_add: false, can_edit: false, can_delete: false,
-        can_approve: false, can_reject: false, can_export: false, can_print: false,
-      })));
+      setForm({ code: "", desc: "", status: "Active" });
+      setScreenAccessRows([emptyScreenAccessRow()]);
       setMemberIds([]);
       setGroupId(null);
       setSaveMsg(null);
@@ -603,18 +739,18 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
       setBusy(false);
       if (!r.ok) { setSaveErr(formatApiError(r.data)); return; }
       const d = r.data;
-      setForm({ name: d.name || "", code: d.code || "", desc: d.description || "", status: d.status ? "Active" : "Inactive" });
+      const codeVal = (d.code || d.name || "").trim();
+      setForm({ code: codeVal, desc: d.description || "", status: d.status ? "Active" : "Inactive" });
       const sp = d.screen_permissions || [];
-      setPermRows(screenRows.map(s => {
-        const p = sp.find(x => x.screen === s.id);
-        return {
-          screen: s.id, screen_code: s.code, screen_name: s.name,
-          can_view: p?.can_view ?? false, can_add: p?.can_add ?? false,
-          can_edit: p?.can_edit ?? false, can_delete: p?.can_delete ?? false,
-          can_approve: p?.can_approve ?? false, can_reject: p?.can_reject ?? false,
-          can_export: p?.can_export ?? false, can_print: p?.can_print ?? false,
-        };
-      }));
+      const fromServer = sp
+        .filter(p => p.screen != null)
+        .map(p => ({
+          screen: String(p.screen),
+          can_view: !!p.can_view,
+          can_add: !!p.can_add,
+          can_delete: !!p.can_delete,
+        }));
+      setScreenAccessRows(fromServer.length > 0 ? fromServer : [emptyScreenAccessRow()]);
       const mems = (d.members || []).map(m => String(m.user_id));
       setMemberIds(mems);
       setSaveMsg("Loaded from server.");
@@ -622,7 +758,7 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
         cleanSnapRef.current = snap();
       });
     },
-  }), [form, permRows, memberIds, groupId, screenRows]);
+  }), [form, screenAccessRows, memberIds, groupId, screenRows]);
 
   return (
     <div style={style.contentArea}>
@@ -633,35 +769,38 @@ const UserGroupAddScreen = forwardRef(function UserGroupAddScreen(_props, ref) {
       <div style={style.section}>
         <SectionHeader title="User Group Details" />
         <Field label="User Group Code" value={form.code} onChange={set("code")} />
-        <Field label="Name" value={form.name} onChange={set("name")} />
         <Field label="Description" value={form.desc} onChange={set("desc")} width={400} />
         <SelectField label="User Group Status" value={form.status} onChange={set("status")} options={["Active", "Inactive"]} width={140} />
       </div>
 
       <div style={style.section}>
         <SectionHeader title="Access Details – Screens" />
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ ...style.table, fontSize: 12 }}>
-            <thead>
-              <tr>
-                <th style={{ ...style.th, textAlign: "left", minWidth: 180 }}>Screen</th>
-                {PERM_ACTIONS.map(a => <th key={a.key} style={{ ...style.th, width: 60, textAlign: "center" }}>{a.label}</th>)}
-              </tr>
-            </thead>
-            <tbody>
-              {permRows.map((p, i) => (
-                <tr key={p.screen}>
-                  <td style={{ ...style.td, textAlign: "left", fontWeight: 500 }}>{p.screen_name}</td>
-                  {PERM_ACTIONS.map(a => (
-                    <td key={a.key} style={{ ...style.td, textAlign: "center" }}>
-                      <input type="checkbox" checked={!!p[a.key]} onChange={() => togglePerm(i, a.key)} />
-                    </td>
-                  ))}
-                </tr>
+        {screenAccessRows.map((row, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 8 }}>
+            <span style={{ color: "#2e8a5a", cursor: "pointer", fontSize: 18 }} onClick={addScreenAccessRow}>+</span>
+            <span style={{ color: "#c0392b", cursor: "pointer", fontSize: 16 }} onClick={() => removeScreenAccessRow(i)}>🗑</span>
+            <select
+              style={{ ...style.select, width: 220 }}
+              value={row.screen}
+              onChange={e => setScreenAccessRow(i, { screen: e.target.value })}
+            >
+              <option value="">— Select screen —</option>
+              {screenRows.map(s => (
+                <option key={s.id} value={String(s.id)}>{s.name}</option>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </select>
+            {SCREEN_PERM_ACTIONS.map(a => (
+              <label key={a.key} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={!!row[a.key]}
+                  onChange={() => setScreenAccessRow(i, { [a.key]: !row[a.key] })}
+                />
+                {a.label}
+              </label>
+            ))}
+          </div>
+        ))}
       </div>
 
       <div style={style.section}>
@@ -773,6 +912,7 @@ export function SmartRevenueApp({ user, onLogout }) {
   const [sidebarAlerts, setSidebarAlerts] = useState([]);
   const [sidebarTasks, setSidebarTasks] = useState([]);
   const [dashboardReloadKey, setDashboardReloadKey] = useState(0);
+  const [usersAddContext, setUsersAddContext] = useState({ mode: "add", userId: null });
   const bizRegRef = useRef(null);
   const usersAddRef = useRef(null);
   const groupAddRef = useRef(null);
@@ -793,6 +933,7 @@ export function SmartRevenueApp({ user, onLogout }) {
   useEffect(() => { refreshShellData(); }, [refreshShellData]);
 
   const confirmLeaveIfNeeded = useCallback(() => {
+    if (screen === "users-add" && usersAddContext.mode === "edit") return true;
     const map = { "users-add": usersAddRef, "usergroup-add": groupAddRef, "business-reg": bizRegRef };
     const r = map[screen];
     try {
@@ -803,7 +944,7 @@ export function SmartRevenueApp({ user, onLogout }) {
       /* ignore */
     }
     return true;
-  }, [screen]);
+  }, [screen, usersAddContext.mode]);
 
   const navigate = useCallback(
     next => {
@@ -836,6 +977,11 @@ export function SmartRevenueApp({ user, onLogout }) {
   const canGoBack = navIndex > 0;
   const canGoForward = navIndex < navHistory.length - 1;
 
+  const openUserDetails = useCallback(id => {
+    setUsersAddContext({ mode: "edit", userId: id });
+    navigate("users-add");
+  }, [navigate]);
+
   const addBookmark = useCallback(sc => {
     const label = SCREEN_TITLES[sc] || sc;
     setBookmarks(prev => prev.some(b => b.screen === sc) ? prev : [...prev, { label, screen: sc }]);
@@ -847,12 +993,23 @@ export function SmartRevenueApp({ user, onLogout }) {
 
   const menuItems = useMemo(() => filterMenuItems(user, MENU_ITEMS), [user]);
   const adminItems = useMemo(() => (canAccessAdminMenu(user) ? ADMIN_ITEMS : []), [user]);
-  const title = SCREEN_TITLES[screen] || screen;
+  const title = screen === "users-add" && usersAddContext.mode === "edit" ? "User Details" : (SCREEN_TITLES[screen] || screen);
 
   const shell = useMemo(() => ({ kpi, loading: shellLoading, error: shellError, refresh: refreshShellData }), [kpi, shellLoading, shellError, refreshShellData]);
 
   const pageActions = useMemo(() => {
     const dashRefresh = { label: "Refresh", onClick: async () => { await refreshShellData(); setDashboardReloadKey(k => k + 1); } };
+    const usersAddActions = usersAddContext.mode === "edit"
+      ? [
+        { label: "Bookmark", onClick: () => addBookmark("users-add") },
+        { label: "Refresh", onClick: () => {} },
+      ]
+      : [
+        { label: "Bookmark", onClick: () => addBookmark("users-add") },
+        { label: "Clear", onClick: () => usersAddRef.current?.clear() },
+        { label: "Save", onClick: () => void usersAddRef.current?.submit() },
+        { label: "Refresh", onClick: () => {} },
+      ];
     return {
       dashboard: [dashRefresh],
       "business-reg": [
@@ -880,15 +1037,10 @@ export function SmartRevenueApp({ user, onLogout }) {
       "users-search": [
         { label: "Bookmark", onClick: () => addBookmark("users-search") },
         { label: "Clear", onClick: () => {} },
-        { label: "Add", onClick: () => navigate("users-add") },
+        { label: "Add", onClick: () => { setUsersAddContext({ mode: "add", userId: null }); navigate("users-add"); } },
         { label: "Refresh", onClick: () => {} },
       ],
-      "users-add": [
-        { label: "Bookmark", onClick: () => addBookmark("users-add") },
-        { label: "Clear", onClick: () => usersAddRef.current?.clear() },
-        { label: "Save", onClick: () => void usersAddRef.current?.submit() },
-        { label: "Refresh", onClick: () => {} },
-      ],
+      "users-add": usersAddActions,
       "usergroup-search": [
         { label: "Bookmark", onClick: () => addBookmark("usergroup-search") },
         { label: "Clear", onClick: () => {} },
@@ -902,7 +1054,7 @@ export function SmartRevenueApp({ user, onLogout }) {
         { label: "Refresh", onClick: () => void groupAddRef.current?.refresh() },
       ],
     };
-  }, [addBookmark, navigate, refreshShellData]);
+  }, [addBookmark, navigate, refreshShellData, usersAddContext.mode]);
 
   return (
     <SrmLayout
@@ -931,8 +1083,8 @@ export function SmartRevenueApp({ user, onLogout }) {
       {screen === "customer-reg" && <CustomerRegistrationScreen />}
       {screen === "quotation" && <QuotationScreen />}
       {screen === "invoice" && <InvoiceScreen />}
-      {screen === "users-search" && <UsersSearchScreen />}
-      {screen === "users-add" && <UsersAddScreen ref={usersAddRef} />}
+      {screen === "users-search" && <UsersSearchScreen onOpenUser={openUserDetails} />}
+      {screen === "users-add" && <UsersAddScreen ref={usersAddRef} mode={usersAddContext.mode} userId={usersAddContext.userId} />}
       {screen === "usergroup-search" && <UserGroupSearchScreen />}
       {screen === "usergroup-add" && <UserGroupAddScreen ref={groupAddRef} />}
       {(screen === "admin" || screen === "reports" || screen === "pricing" || screen === "delinquency" || screen === "accounting") && (
