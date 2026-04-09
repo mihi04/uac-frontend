@@ -45,7 +45,7 @@ const SAMPLE_PAYMENTS = [
 
 function CustomerRegistrationScreen() {
   const [step, setStep] = useState(0);
-  const steps = ["Company Info", "Address", "Tax", "Contacts", "Financial", "Documents"];
+  const steps = ["Company Info", "Address", "Tax", "Financial", "Documents"];
   const [form, setForm] = useState({
     companyName: "", bizType: "Pvt Ltd", gst: "", pan: "", addr: "", city: "", state: "", postal: "", credit: "",
     contacts: [{ name: "", phone: "", email: "" }],
@@ -65,12 +65,34 @@ function CustomerRegistrationScreen() {
           </div>
         ))}
       </div>
-      {step === 0 && (<div style={style.section}><SectionHeader title="Company Information" /><Field label="Company Name" value={form.companyName} onChange={set("companyName")} /><SelectField label="Business Type" value={form.bizType} onChange={set("bizType")} options={["Pvt Ltd", "Ltd", "LLP", "Proprietorship", "Partnership"]} /></div>)}
+      {step === 0 && (
+        <>
+          <div style={style.section}>
+            <SectionHeader title="Company Information" />
+            <Field label="Company Name" value={form.companyName} onChange={set("companyName")} />
+            <SelectField label="Business Type" value={form.bizType} onChange={set("bizType")} options={["Pvt Ltd", "Ltd", "LLP", "Proprietorship", "Partnership"]} />
+          </div>
+          <div style={style.section}>
+            <SectionHeader title="Contacts" />
+            {form.contacts.map((c, i) => (
+              <div key={i} style={{ background: "#f0f7fb", padding: "10px 14px", marginBottom: 10, borderRadius: 3, border: "1px solid #cce0ec" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                  <span style={{ fontWeight: 600, fontSize: 12 }}>Contact {i + 1}</span>
+                  {i > 0 && (<button type="button" onClick={() => removeContact(i)} style={{ ...style.btn, background: "#c0392b", fontSize: 11 }}>Remove</button>)}
+                </div>
+                <Field label="Name" value={c.name} onChange={v => setContact(i, "name", v)} />
+                <Field label="Phone" value={c.phone} onChange={v => setContact(i, "phone", v)} />
+                <Field label="Email" value={c.email} onChange={v => setContact(i, "email", v)} />
+              </div>
+            ))}
+            <button type="button" style={{ ...style.btn, fontSize: 12 }} onClick={addContact}>+ Add Contact</button>
+          </div>
+        </>
+      )}
       {step === 1 && (<div style={style.section}><SectionHeader title="Address" /><Field label="Address" value={form.addr} onChange={set("addr")} /><Field label="City" value={form.city} onChange={set("city")} /><Field label="State" value={form.state} onChange={set("state")} /><Field label="Postal Code" value={form.postal} onChange={set("postal")} /></div>)}
       {step === 2 && (<div style={style.section}><SectionHeader title="Tax Details" /><Field label="GST Number" value={form.gst} onChange={set("gst")} placeholder="27ABCDE1234F1Z5" /><Field label="PAN Number" value={form.pan} onChange={set("pan")} placeholder="ABCDE1234F" /></div>)}
-      {step === 3 && (<div style={style.section}><SectionHeader title="Contacts" />{form.contacts.map((c, i) => (<div key={i} style={{ background: "#f0f7fb", padding: "10px 14px", marginBottom: 10, borderRadius: 3, border: "1px solid #cce0ec" }}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}><span style={{ fontWeight: 600, fontSize: 12 }}>Contact {i + 1}</span>{i > 0 && (<button type="button" onClick={() => removeContact(i)} style={{ ...style.btn, background: "#c0392b", fontSize: 11 }}>Remove</button>)}</div><Field label="Name" value={c.name} onChange={v => setContact(i, "name", v)} /><Field label="Phone" value={c.phone} onChange={v => setContact(i, "phone", v)} /><Field label="Email" value={c.email} onChange={v => setContact(i, "email", v)} /></div>))}<button type="button" style={{ ...style.btn, fontSize: 12 }} onClick={addContact}>+ Add Contact</button></div>)}
-      {step === 4 && (<div style={style.section}><SectionHeader title="Financial Details" /><Field label="Credit Limit" value={form.credit} onChange={set("credit")} placeholder="e.g. 100000" /><SelectField label="Payment Terms" value="30 Days" onChange={() => {}} options={["Immediate", "15 Days", "30 Days", "45 Days", "60 Days"]} /></div>)}
-      {step === 5 && (<div style={style.section}><SectionHeader title="Documents" />{["GST Certificate", "PAN Card", "MSME Certificate", "Bank Statement"].map(doc => (<div key={doc} style={{ ...style.formRow, marginBottom: 10 }}><span style={style.label}>{doc}</span><button type="button" style={{ ...style.btn, fontSize: 11 }}>Upload</button></div>))}</div>)}
+      {step === 3 && (<div style={style.section}><SectionHeader title="Financial Details" /><Field label="Credit Limit" value={form.credit} onChange={set("credit")} placeholder="e.g. 100000" /><SelectField label="Payment Terms" value="30 Days" onChange={() => {}} options={["Immediate", "15 Days", "30 Days", "45 Days", "60 Days"]} /></div>)}
+      {step === 4 && (<div style={style.section}><SectionHeader title="Documents" />{["GST Certificate", "PAN Card", "MSME Certificate", "Bank Statement"].map(doc => (<div key={doc} style={{ ...style.formRow, marginBottom: 10 }}><span style={style.label}>{doc}</span><button type="button" style={{ ...style.btn, fontSize: 11 }}>Upload</button></div>))}</div>)}
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
         {step > 0 && <button type="button" style={style.btn} onClick={() => setStep(s => s - 1)}>Previous</button>}
         {step < steps.length - 1 && <button type="button" style={style.btn} onClick={() => setStep(s => s + 1)}>Next</button>}
