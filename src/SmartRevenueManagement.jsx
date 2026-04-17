@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useReducer, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { COLORS } from "./theme.js";
 import { canAccessAdminMenu, filterMenuItems } from "./auth/rbac.js";
 import { fetchDashboard } from "./api/dashboardApi.js";
@@ -12,6 +12,10 @@ import {
   createUser, listUserGroups, listUsers, listScreens, getUser, updateUser,
   createGroup, updateGroup, getGroup, getMyPermissions,
 } from "./api/usersApi.js";
+import {
+  listCustomers, getCustomer, createCustomer, updateCustomer,
+  addCustomerContact, addCustomerAddress, patchCustomerContact, patchCustomerAddress,
+} from "./api/customersApi.js";
 import { DashboardScreen } from "./components/srm/screens/DashboardScreen.jsx";
 import { BusinessRegistrationScreen } from "./components/srm/screens/BusinessRegistrationScreen.jsx";
 
@@ -43,19 +47,297 @@ const SAMPLE_PAYMENTS = [
 
 // ── Legacy screens (Customer Registration, Quotation, Invoice) ──────────────
 
-function CustomerRegistrationScreen() {
+const PAYMENT_TERM_OPTIONS = ["Immediate", "15 Days", "30 Days", "45 Days", "60 Days"];
+
+function emptyCustomerRegForm() {
+  return {
+    companyName: "", bizType: "Pvt Ltd", gst: "", pan: "", addr: "", city: "", state: "", postal: "", credit: "",
+    paymentTerms: "30 Days",
+    contacts: [{ name: "", phone: "", email: "" }],
+  };
+}
+
+function creditDaysToPaymentTerms(days) {
+  const n = Number(days);
+  if (!Number.isFinite(n) || n <= 0) return "Immediate";
+  const opts = [15, 30, 45, 60];
+  let best = 60;
+  let bestDiff = Infinity;
+  for (const o of opts) {
+    const d = Math.abs(n - o);
+    if (d < bestDiff) { bestDiff = d; best = o; }
+  }
+  if (n < 8) return "Immediate";
+  return `${best} Days`;
+}
+
+function legalStructureToBizType(ls) {
+  const key = (ls == null ? "" : String(ls)).toLowerCase().replace(/-/g, "_");
+  const map = {
+    pvt_ltd: "Pvt Ltd",
+    private_limited: "Pvt Ltd",
+    llp: "LLP",
+    proprietorship: "Proprietorship",
+    partnership: "Partnership",
+    other: "Ltd",
+  };
+  return map[key] || "Pvt Ltd";
+}
+
+function mapApiDetailToLegacyState(data) {
+  const contactsRaw = Array.isArray(data.contacts) ? [...data.contacts] : [];
+  contactsRaw.sort((a, b) => (b.is_primary === true ? 1 : 0) - (a.is_primary === true ? 1 : 0));
+  const loadedContactIds = contactsRaw.map(c => c.id).filter(id => id != null);
+  const contacts = contactsRaw.length
+    ? contactsRaw.map(c => ({
+      name: c.name ?? "",
+      phone: c.phone ?? "",
+      email: c.email ?? "",
+    }))
+    : [{ name: "", phone: "", email: "" }];
+
+  const addrs = Array.isArray(data.addresses) ? data.addresses : [];
+  const addrRow = addrs.find(a => a.is_default) || addrs[0] || null;
+  const loadedAddressId = addrRow?.id ?? null;
+
+  const creditVal = data.credit_limit;
+  const creditStr = creditVal != null && creditVal !== "" ? String(creditVal) : "";
+
+  const form = {
+    companyName: data.company_name ?? "",
+    bizType: legalStructureToBizType(data.legal_structure),
+    gst: data.gst ?? "",
+    pan: data.pan ?? "",
+    addr: addrRow?.address_line ?? "",
+    city: addrRow?.city ?? "",
+    state: addrRow?.state ?? "",
+    postal: addrRow?.pin_code ?? "",
+    credit: creditStr,
+    paymentTerms: creditDaysToPaymentTerms(data.credit_days),
+    contacts,
+  };
+  return { form, loadedContactIds, loadedAddressId, loadedBusinessType: data.business_type ?? null };
+}
+
+function formatLegalStructureColumn(ls) {
+  if (ls == null || String(ls).trim() === "") return "";
+  return legalStructureToBizType(ls);
+}
+
+function bizTypeToLegalStructure(bizLabel) {
+  const map = {
+    "Pvt Ltd": "pvt_ltd",
+    Ltd: "other",
+    LLP: "llp",
+    Proprietorship: "proprietorship",
+    Partnership: "partnership",
+  };
+  return map[bizLabel] || "pvt_ltd";
+}
+
+function paymentTermsToCreditDays(label) {
+  const m = {
+    Immediate: 0,
+    "15 Days": 15,
+    "30 Days": 30,
+    "45 Days": 45,
+    "60 Days": 60,
+  };
+  const n = m[label];
+  return Number.isFinite(n) ? n : 30;
+}
+
+function parseCreditLimitForApi(raw) {
+  const s = (raw ?? "").trim();
+  if (!s) return "0.00";
+  const n = Number.parseFloat(s.replace(/,/g, ""));
+  if (!Number.isFinite(n) || n < 0) return "0.00";
+  return n.toFixed(2);
+}
+
+function legacyFormToWritePayload(form, existingBusinessType = null) {
+  const company = (form.companyName || "").trim();
+  const gst = (form.gst || "").trim();
+  const pan = (form.pan || "").trim();
+  const bt = (existingBusinessType != null && String(existingBusinessType).trim() !== "")
+    ? String(existingBusinessType).trim()
+    : "trader";
+  return {
+    company_name: company,
+    business_type: bt,
+    legal_structure: bizTypeToLegalStructure(form.bizType),
+    credit_limit: parseCreditLimitForApi(form.credit),
+    credit_days: paymentTermsToCreditDays(form.paymentTerms),
+    status: "active",
+    gst: gst || null,
+    pan: pan || "",
+  };
+}
+
+function hasAddressInput(form) {
+  return [form.addr, form.city, form.state, form.postal].some(x => (x || "").trim() !== "");
+}
+
+function registeredAddressBody(form) {
+  const line = (form.addr || "").trim() || "—";
+  return {
+    address_type: "registered",
+    address_line: line,
+    city: (form.city || "").trim() || "—",
+    state: (form.state || "").trim() || "—",
+    country: "India",
+    pin_code: (form.postal || "").trim() || "000000",
+    is_default: true,
+  };
+}
+
+const CustomerRegistrationScreen = forwardRef(function CustomerRegistrationScreen({ sourceCustomerId = null, onPersistedCustomerId }, ref) {
   const [step, setStep] = useState(0);
   const steps = ["Company Info", "Address", "Tax", "Financial", "Documents"];
-  const [form, setForm] = useState({
-    companyName: "", bizType: "Pvt Ltd", gst: "", pan: "", addr: "", city: "", state: "", postal: "", credit: "",
-    contacts: [{ name: "", phone: "", email: "" }],
-  });
+  const [form, setForm] = useState(() => emptyCustomerRegForm());
+  const [loadedContactIds, setLoadedContactIds] = useState([]);
+  const [loadedAddressId, setLoadedAddressId] = useState(null);
+  const [loadedBusinessType, setLoadedBusinessType] = useState(null);
+  const [saving, setSaving] = useState(false);
   const set = k => v => setForm(f => ({ ...f, [k]: v }));
   function addContact() { setForm(f => ({ ...f, contacts: [...f.contacts, { name: "", phone: "", email: "" }] })); }
   function removeContact(i) { setForm(f => ({ ...f, contacts: f.contacts.filter((_, idx) => idx !== i) })); }
   function setContact(i, k, v) {
     setForm(f => { const c = [...f.contacts]; c[i] = { ...c[i], [k]: v }; return { ...f, contacts: c }; });
   }
+
+  const submit = useCallback(async () => {
+    const company = (form.companyName || "").trim();
+    if (!company) {
+      alert("Company Name is required.");
+      return;
+    }
+    const payload = legacyFormToWritePayload(form, sourceCustomerId != null ? loadedBusinessType : null);
+    const contactRows = (form.contacts || []).map((c, i) => ({
+      name: ((c.name || "").trim() || (i === 0 ? company : `Contact ${i + 1}`)),
+      designation: "",
+      phone: (c.phone || "").trim(),
+      email: (c.email || "").trim(),
+      is_primary: i === 0,
+    }));
+    const addrBody = hasAddressInput(form) ? registeredAddressBody(form) : null;
+
+    setSaving(true);
+    try {
+      if (sourceCustomerId != null) {
+        const id = sourceCustomerId;
+        const up = await updateCustomer(id, payload);
+        if (!up.ok) {
+          alert(formatApiError(up.error));
+          return;
+        }
+        for (let i = 0; i < contactRows.length; i++) {
+          const body = contactRows[i];
+          const cid = loadedContactIds[i];
+          const r = cid
+            ? await patchCustomerContact(id, cid, body)
+            : await addCustomerContact(id, body);
+          if (!r.ok) {
+            alert(formatApiError(r.error));
+            return;
+          }
+        }
+        if (addrBody) {
+          const ar = loadedAddressId
+            ? await patchCustomerAddress(id, loadedAddressId, addrBody)
+            : await addCustomerAddress(id, addrBody);
+          if (!ar.ok) {
+            alert(formatApiError(ar.error));
+            return;
+          }
+          if (!loadedAddressId && ar.data?.id) setLoadedAddressId(ar.data.id);
+        }
+        const refreshed = await getCustomer(id);
+        if (refreshed.ok) {
+          const m = mapApiDetailToLegacyState(refreshed.data);
+          setForm(m.form);
+          setLoadedContactIds(m.loadedContactIds);
+          setLoadedAddressId(m.loadedAddressId);
+          setLoadedBusinessType(m.loadedBusinessType ?? null);
+        }
+        alert(`Updated customer #${id}.`);
+        return;
+      }
+
+      const cr = await createCustomer(payload);
+      if (!cr.ok) {
+        alert(formatApiError(cr.error));
+        return;
+      }
+      const newId = cr.data?.id;
+      if (!newId) {
+        alert("Saved but no customer id returned.");
+        return;
+      }
+      const nextIds = [];
+      for (const body of contactRows) {
+        const r = await addCustomerContact(newId, body);
+        if (!r.ok) {
+          alert(`Customer #${newId} created but contact failed: ${formatApiError(r.error)}`);
+          onPersistedCustomerId?.(newId);
+          return;
+        }
+        if (r.data?.id) nextIds.push(r.data.id);
+      }
+      setLoadedContactIds(nextIds);
+      if (addrBody) {
+        const ar = await addCustomerAddress(newId, addrBody);
+        if (!ar.ok) {
+          alert(`Customer #${newId} saved but address failed: ${formatApiError(ar.error)}`);
+        } else if (ar.data?.id) {
+          setLoadedAddressId(ar.data.id);
+        }
+      }
+      onPersistedCustomerId?.(newId);
+      alert(`Saved customer #${newId}.`);
+    } finally {
+      setSaving(false);
+    }
+  }, [form, sourceCustomerId, loadedContactIds, loadedAddressId, loadedBusinessType, onPersistedCustomerId]);
+
+  useImperativeHandle(ref, () => ({
+    submit: () => void submit(),
+    clear: () => {
+      setForm(emptyCustomerRegForm());
+      setLoadedContactIds([]);
+      setLoadedAddressId(null);
+      setLoadedBusinessType(null);
+      setStep(0);
+    },
+  }), [submit]);
+
+  useEffect(() => {
+    if (sourceCustomerId == null) {
+      setForm(emptyCustomerRegForm());
+      setLoadedContactIds([]);
+      setLoadedAddressId(null);
+      setLoadedBusinessType(null);
+      setStep(0);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const res = await getCustomer(sourceCustomerId);
+      if (cancelled) return;
+      if (!res.ok) {
+        alert(formatApiError(res.error));
+        return;
+      }
+      const mapped = mapApiDetailToLegacyState(res.data);
+      setForm(mapped.form);
+      setLoadedContactIds(mapped.loadedContactIds);
+      setLoadedAddressId(mapped.loadedAddressId);
+      setLoadedBusinessType(mapped.loadedBusinessType ?? null);
+      setStep(0);
+    })();
+    return () => { cancelled = true; };
+  }, [sourceCustomerId]);
+
   return (
     <div style={style.contentArea}>
       <div style={{ display: "flex", gap: 0, marginBottom: 18 }}>
@@ -91,16 +373,26 @@ function CustomerRegistrationScreen() {
       )}
       {step === 1 && (<div style={style.section}><SectionHeader title="Address" /><Field label="Address" value={form.addr} onChange={set("addr")} /><Field label="City" value={form.city} onChange={set("city")} /><Field label="State" value={form.state} onChange={set("state")} /><Field label="Postal Code" value={form.postal} onChange={set("postal")} /></div>)}
       {step === 2 && (<div style={style.section}><SectionHeader title="Tax Details" /><Field label="GST Number" value={form.gst} onChange={set("gst")} placeholder="27ABCDE1234F1Z5" /><Field label="PAN Number" value={form.pan} onChange={set("pan")} placeholder="ABCDE1234F" /></div>)}
-      {step === 3 && (<div style={style.section}><SectionHeader title="Financial Details" /><Field label="Credit Limit" value={form.credit} onChange={set("credit")} placeholder="e.g. 100000" /><SelectField label="Payment Terms" value="30 Days" onChange={() => {}} options={["Immediate", "15 Days", "30 Days", "45 Days", "60 Days"]} /></div>)}
+      {step === 3 && (<div style={style.section}><SectionHeader title="Financial Details" /><Field label="Credit Limit" value={form.credit} onChange={set("credit")} placeholder="e.g. 100000" /><SelectField label="Payment Terms" value={form.paymentTerms} onChange={set("paymentTerms")} options={PAYMENT_TERM_OPTIONS} /></div>)}
       {step === 4 && (<div style={style.section}><SectionHeader title="Documents" />{["GST Certificate", "PAN Card", "MSME Certificate", "Bank Statement"].map(doc => (<div key={doc} style={{ ...style.formRow, marginBottom: 10 }}><span style={style.label}>{doc}</span><button type="button" style={{ ...style.btn, fontSize: 11 }}>Upload</button></div>))}</div>)}
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
         {step > 0 && <button type="button" style={style.btn} onClick={() => setStep(s => s - 1)}>Previous</button>}
         {step < steps.length - 1 && <button type="button" style={style.btn} onClick={() => setStep(s => s + 1)}>Next</button>}
-        {step === steps.length - 1 && <button type="button" style={{ ...style.btn, background: "#2e8a5a" }}>Save Customer</button>}
+        {step === steps.length - 1 && (
+          <button
+            type="button"
+            style={{ ...style.btn, background: "#2e8a5a", opacity: saving ? 0.7 : 1 }}
+            disabled={saving}
+            onClick={() => void submit()}
+          >
+            {saving ? "Saving…" : "Save Customer"}
+          </button>
+        )}
       </div>
     </div>
   );
-}
+});
+CustomerRegistrationScreen.displayName = "CustomerRegistrationScreen";
 
 function QuotationScreen() {
   const [charges, setCharges] = useState([{ type: "Freight", amount: 20000 }, { type: "Handling", amount: 5000 }]);
@@ -264,6 +556,133 @@ function UsersSearchScreen({ onOpenUser }) {
     </div>
   );
 }
+
+function formatCustomerStatusLabel(status) {
+  if (status == null || status === "") return "—";
+  const s = String(status).replace(/_/g, " ");
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+}
+
+function formatCustomerBusinessType(bt) {
+  if (bt == null || bt === "") return "—";
+  const s = String(bt).replace(/_/g, " ");
+  return s.split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ");
+}
+
+// ── Customers – Search (Menu) ───────────────────────────────────────────────
+const CustomersSearchScreen = forwardRef(function CustomersSearchScreen({ onOpenCustomer }, ref) {
+  const [companyName, setCompanyName] = useState("");
+  const [contactOrEmail, setContactOrEmail] = useState("");
+  const [results, setResults] = useState([]);
+  const [searched, setSearched] = useState(false);
+  const [searching, setSearching] = useState(false);
+
+  const handleSearch = useCallback(async () => {
+    setSearched(true);
+    setSearching(true);
+    const term = [companyName, contactOrEmail].map(s => (s || "").trim()).find(Boolean) || "";
+    const res = await listCustomers({ search: term || undefined, pageSize: 200 });
+    let rows = [];
+    if (res.ok) {
+      rows = res.results.map(c => ({
+        id: c.id,
+        companyName: c.company_name ?? "",
+        businessType: c.business_type ?? "",
+        legalStructure: c.legal_structure ?? "",
+        status: c.status ?? "",
+        primaryName: c.primary_contact_name ?? "",
+        primaryEmail: c.primary_contact_email ?? "",
+      }));
+      if (companyName.trim()) {
+        const q = companyName.trim().toLowerCase();
+        rows = rows.filter(r => r.companyName.toLowerCase().includes(q));
+      }
+      if (contactOrEmail.trim()) {
+        const q = contactOrEmail.trim().toLowerCase();
+        rows = rows.filter(
+          r => r.primaryName.toLowerCase().includes(q) || r.primaryEmail.toLowerCase().includes(q)
+        );
+      }
+    }
+    setResults(rows);
+    setSearching(false);
+    if (!res.ok) alert(formatApiError(res.error));
+  }, [companyName, contactOrEmail]);
+
+  const clearFilters = useCallback(() => {
+    setCompanyName("");
+    setContactOrEmail("");
+    setResults([]);
+    setSearched(false);
+  }, []);
+
+  useImperativeHandle(ref, () => ({
+    runSearch: () => void handleSearch(),
+    clearFilters,
+  }), [handleSearch, clearFilters]);
+
+  return (
+    <div style={style.contentArea}>
+      <div style={{ background: "#f0f5f8", border: "1px solid #c8dbe8", borderRadius: 3, padding: "14px 18px", marginBottom: 14 }}>
+        <Field label="Company Name" value={companyName} onChange={setCompanyName} />
+        <Field label="Contact / Email" value={contactOrEmail} onChange={setContactOrEmail} placeholder="Primary contact name or email" />
+        <div style={{ textAlign: "center", marginTop: 6 }}>
+          <button type="button" style={style.btn} onClick={handleSearch} disabled={searching}>
+            {searching ? "Searching…" : "Search"}
+          </button>
+        </div>
+      </div>
+      <table style={style.table}>
+        <thead>
+          <tr>
+            {["Company Name", "Business Type", "Primary Contact", "Email", "Status"].map(h => (
+              <th key={h} style={style.th}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {searched && results.length === 0 && (
+            <tr><td colSpan={5} style={{ ...style.td, color: "#999" }}>No results found.</td></tr>
+          )}
+          {results.map(c => (
+            <tr key={c.id}>
+              <td style={style.td}>
+                <span
+                  role="button"
+                  tabIndex={0}
+                  style={{ color: COLORS.link, cursor: "pointer" }}
+                  onClick={() => onOpenCustomer?.(c.id)}
+                  onKeyDown={e => e.key === "Enter" && onOpenCustomer?.(c.id)}
+                  onMouseEnter={e => { e.currentTarget.style.textDecoration = "underline"; }}
+                  onMouseLeave={e => { e.currentTarget.style.textDecoration = "none"; }}
+                >
+                  {c.companyName || "—"}
+                </span>
+              </td>
+              <td style={style.td}>
+                {formatLegalStructureColumn(c.legalStructure) || formatCustomerBusinessType(c.businessType)}
+              </td>
+              <td style={style.td}>{c.primaryName || "—"}</td>
+              <td style={style.td}>{c.primaryEmail || "—"}</td>
+              <td style={style.td}>
+                <span
+                  style={
+                    ["inactive", "blocked"].includes(String(c.status).toLowerCase())
+                      ? style.badgeRed
+                      : style.badgeGreen
+                  }
+                >
+                  {formatCustomerStatusLabel(c.status)}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+});
+CustomersSearchScreen.displayName = "CustomersSearchScreen";
 
 // ── Users – Add ──────────────────────────────────────────────────────────────
 const UsersAddScreen = forwardRef(function UsersAddScreen({ mode = "add", userId = null }, ref) {
@@ -952,7 +1371,7 @@ UserGroupAddScreen.displayName = "UserGroupAddScreen";
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const MENU_ITEMS = [
-  { label: "Customer Registration", screen: "customer-reg" },
+  { label: "Customer Registration", screen: "customers-search" },
   { label: "Pricing", screen: "pricing" },
   { label: "Quotation", screen: "quotation" },
   { label: "Billing", screen: "invoice" },
@@ -989,6 +1408,7 @@ const SCREEN_TITLES = {
   "users-add": "Users – Add",
   "usergroup-search": "User Group",
   "usergroup-add": "User Group – Add",
+  "customers-search": "Customer Registration",
   admin: "Admin",
   reports: "Reports",
   pricing: "Pricing",
@@ -1037,9 +1457,25 @@ export function SmartRevenueApp({ user, onLogout }) {
   const [dashboardReloadKey, setDashboardReloadKey] = useState(0);
   const [usersAddContext, setUsersAddContext] = useState({ mode: "add", userId: null });
   const [groupAddContext, setGroupAddContext] = useState({ mode: "add", groupId: null });
+  const [customerRegSourceId, setCustomerRegSourceId] = useState(null);
+  const skipCustomerRegClearRef = useRef(false);
   const bizRegRef = useRef(null);
+  const bizRegPendingRef = useRef(null);
+  const customersSearchRef = useRef(null);
+  const customerRegRef = useRef(null);
   const usersAddRef = useRef(null);
   const groupAddRef = useRef(null);
+
+  useLayoutEffect(() => {
+    if (screen !== "business-reg") return;
+    const p = bizRegPendingRef.current;
+    if (!p) return;
+    bizRegPendingRef.current = null;
+    const r = bizRegRef.current;
+    if (!r) return;
+    if (p.type === "add") r.clear?.();
+    else if (p.type === "edit" && p.id != null) void r.openCustomer?.(p.id);
+  }, [screen]);
 
   useEffect(() => { saveBookmarksToStorage(bookmarks); }, [bookmarks]);
 
@@ -1077,6 +1513,10 @@ export function SmartRevenueApp({ user, onLogout }) {
       setAdminOpen(false);
       if (next === screen) return;
       if (!confirmLeaveIfNeeded()) return;
+      if (next === "customer-reg" && !skipCustomerRegClearRef.current) {
+        setCustomerRegSourceId(null);
+      }
+      skipCustomerRegClearRef.current = false;
       dispatchNav({ type: "push", screen: next });
     },
     [screen, confirmLeaveIfNeeded]
@@ -1112,6 +1552,12 @@ export function SmartRevenueApp({ user, onLogout }) {
     navigate("usergroup-add");
   }, [navigate]);
 
+  const openCustomerInLegacyReg = useCallback(id => {
+    skipCustomerRegClearRef.current = true;
+    setCustomerRegSourceId(Number(id));
+    navigate("customer-reg");
+  }, [navigate]);
+
   const addBookmark = useCallback(sc => {
     const label = SCREEN_TITLES[sc] || sc;
     setBookmarks(prev => prev.some(b => b.screen === sc) ? prev : [...prev, { label, screen: sc }]);
@@ -1123,6 +1569,7 @@ export function SmartRevenueApp({ user, onLogout }) {
 
   const menuItems = useMemo(() => filterMenuItems(user, MENU_ITEMS), [user]);
   const adminItems = useMemo(() => (canAccessAdminMenu(user) ? ADMIN_ITEMS : []), [user]);
+
   const title =
     screen === "users-add" && usersAddContext.mode === "edit"
       ? "User Details"
@@ -1166,8 +1613,8 @@ export function SmartRevenueApp({ user, onLogout }) {
       ],
       "customer-reg": [
         { label: "Bookmark", onClick: () => addBookmark("customer-reg") },
-        { label: "Clear", onClick: () => {} },
-        { label: "Save", onClick: () => alert("Saved!") },
+        { label: "Clear", onClick: () => { setCustomerRegSourceId(null); customerRegRef.current?.clear(); } },
+        { label: "Save", onClick: () => void customerRegRef.current?.submit() },
         { label: "Refresh", onClick: () => {} },
       ],
       quotation: [
@@ -1192,6 +1639,12 @@ export function SmartRevenueApp({ user, onLogout }) {
         { label: "Clear", onClick: () => {} },
         { label: "Add", onClick: () => { setGroupAddContext({ mode: "add", groupId: null }); navigate("usergroup-add"); } },
         { label: "Refresh", onClick: () => {} },
+      ],
+      "customers-search": [
+        { label: "Bookmark", onClick: () => addBookmark("customers-search") },
+        { label: "Clear", onClick: () => customersSearchRef.current?.clearFilters?.() },
+        { label: "Add", onClick: () => navigate("customer-reg") },
+        { label: "Refresh", onClick: () => void customersSearchRef.current?.runSearch?.() },
       ],
       "usergroup-add": userGroupAddActions,
     };
@@ -1221,10 +1674,19 @@ export function SmartRevenueApp({ user, onLogout }) {
     >
       {screen === "dashboard" && <DashboardScreen shell={shell} reloadTablesKey={dashboardReloadKey} />}
       {screen === "business-reg" && <BusinessRegistrationScreen ref={bizRegRef} />}
-      {screen === "customer-reg" && <CustomerRegistrationScreen />}
+      {screen === "customer-reg" && (
+        <CustomerRegistrationScreen
+          ref={customerRegRef}
+          sourceCustomerId={customerRegSourceId}
+          onPersistedCustomerId={setCustomerRegSourceId}
+        />
+      )}
       {screen === "quotation" && <QuotationScreen />}
       {screen === "invoice" && <InvoiceScreen />}
       {screen === "users-search" && <UsersSearchScreen onOpenUser={openUserDetails} />}
+      {screen === "customers-search" && (
+        <CustomersSearchScreen ref={customersSearchRef} onOpenCustomer={openCustomerInLegacyReg} />
+      )}
       {screen === "users-add" && <UsersAddScreen ref={usersAddRef} mode={usersAddContext.mode} userId={usersAddContext.userId} />}
       {screen === "usergroup-search" && <UserGroupSearchScreen onOpenGroup={openUserGroupDetails} />}
       {screen === "usergroup-add" && (

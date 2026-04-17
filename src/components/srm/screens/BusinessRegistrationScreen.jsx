@@ -398,6 +398,52 @@ export const BusinessRegistrationScreen = forwardRef(function BusinessRegistrati
     });
   }, [logoPreview]);
 
+  const applyCustomerDetail = useCallback((data, idHint) => {
+    const resolvedId = idHint ?? data?.id;
+    if (resolvedId != null) setCustomerId(resolvedId);
+    const ids = extractIdsFromCustomer(data);
+    setForm(mapCustomerToForm(data));
+    setPrimaryContactId(ids.primaryContactId);
+    setAltContactId(ids.altContactId);
+    setAddrRegId(ids.addrRegId);
+    setAddrBillId(ids.addrBillId);
+    setAddrShipId(ids.addrShipId);
+    setRegisteredAt(ids.registeredAt);
+    setLogoFile(null);
+    setLogoPreview(prev => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    setFileInputKey(k => k + 1);
+    setKycFiles({
+      gst_certificate: null,
+      pan_copy: null,
+      iec_certificate: null,
+      address_proof: null,
+      authorized_signatory_id: null,
+    });
+    setKycKey(k => k + 1);
+    setSaveMessage("Loaded from server.");
+    queueMicrotask(() => {
+      baselineRef.current = captureDirtySnapshot();
+    });
+  }, []);
+
+  const openCustomer = useCallback(async rawId => {
+    const id = Number(rawId);
+    if (!Number.isFinite(id) || id <= 0) return;
+    setBusy(true);
+    setSaveError(null);
+    setSaveMessage(null);
+    const res = await getCustomer(id);
+    setBusy(false);
+    if (!res.ok) {
+      setSaveError(formatApiError(res.error));
+      return;
+    }
+    applyCustomerDetail(res.data, id);
+  }, [applyCustomerDetail]);
+
   const loadCustomer = useCallback(async () => {
     if (!customerId) {
       setSaveError("Save a customer first, or create one to obtain an ID for refresh.");
@@ -412,19 +458,8 @@ export const BusinessRegistrationScreen = forwardRef(function BusinessRegistrati
       setSaveError(formatApiError(res.error));
       return;
     }
-    const ids = extractIdsFromCustomer(res.data);
-    setForm(mapCustomerToForm(res.data));
-    setPrimaryContactId(ids.primaryContactId);
-    setAltContactId(ids.altContactId);
-    setAddrRegId(ids.addrRegId);
-    setAddrBillId(ids.addrBillId);
-    setAddrShipId(ids.addrShipId);
-    setRegisteredAt(ids.registeredAt);
-    setSaveMessage("Loaded from server.");
-    queueMicrotask(() => {
-      baselineRef.current = captureDirtySnapshot();
-    });
-  }, [customerId]);
+    applyCustomerDetail(res.data, customerId);
+  }, [customerId, applyCustomerDetail]);
 
   const buildCustomerPayload = useCallback(() => {
     const company_name = (form.bizName || "").trim() || (form.legalName || "").trim() || "Unnamed Company";
@@ -745,13 +780,14 @@ export const BusinessRegistrationScreen = forwardRef(function BusinessRegistrati
     () => ({
       clear,
       refresh: loadCustomer,
+      openCustomer,
       save,
       isDirty: () => captureDirtySnapshot() !== baselineRef.current,
       markClean: () => {
         baselineRef.current = captureDirtySnapshot();
       },
     }),
-    [clear, loadCustomer, save]
+    [clear, loadCustomer, openCustomer, save]
   );
 
   const kycRow = (label, docKey) => (
